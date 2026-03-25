@@ -3,24 +3,19 @@
 #include <Servo.h> 
 #include <Wire.h>
 
-// 1. Setup the Motor Shield
+// Hardware objects
   DualG2HighPowerMotorShield24v14 md;
-
-// 2. Setup the Winch Parts
   Servo pawlServo;
-  int PAWL_SERVO_PIN = 13;
-  const int PAWL_SERVO_LOCK_POS = 70;
-  const int PAWL_SERVO_OPEN_POS = 130;
 
-// Variables Defined in Dylan's Guide
-  String winchAction = "IDLE";
-  float depthTarget = 0;
-  String winchNextState = "";
-  bool winchComplete = false;
+//Pin declarations
+  const uint8_t PAWL_SERVO_PIN = 13;
+  const uint8_t WINCH_HOME_SWITCH_PIN = 3;
 
-// New Variables+++
+//Servo Positions
+  const uint8_t PAWL_SERVO_LOCK_POS = 70;
+  const uint8_t PAWL_SERVO_OPEN_POS = 130;
 
-  float drum_radius = (1.5/2) + (1/16) + (1/32);       // Inches adding width of cable !CHECK!
+//I2C / encoder config
   const uint8_t I2C_MUX_ADDR = 0x70;          // Adafruit TCA9548A default address
   const uint8_t AS5600_ADDR = 0x36;           // Magnetic encoder I2C address
   const uint8_t AS5600_RAW_ANGLE_REG = 0x0C;  // RAW ANGLE high byte register
@@ -29,23 +24,57 @@
   const int Winch_ENC_COUNTS = 4096;          // AS5600 is 12-bit
   const int WRAP_THRESH = Winch_ENC_COUNTS/2; // 2048 counts for the AS5600
   const int NOISE_THRESH = 4;                 // counts !CHECK!
-  float winchHome = 0;
-  float actual_winchPos = 0;
-  float t_stamp = 0;                         //Timestamp used for non-blocking delays
-  float winchSpeed = 0;
-  float winchSpeedFiltered = 0;
-  float old_winchPos = 0;
-  float t_winch_old = 0;
-  float jogStartPos = 0;
-  uint32_t jogReliefDetectedMs = 0;
-  uint32_t winchControlLastMs = 0;
 
-  int Winch_lastPos = 0;                      // Delete if you use Quinton's library
-  long Winch_totalSteps = 0;                  // Delete if you use Quinton's library
+// Mechanical calibrations
+  float drum_radius = (1.486f/2.0f) + (1.0f/32.0f);       // Inches adding width of cable !CHECK!
 
-// Raise and Lower Speeds
+// Motion tuning
   int raise_speed = 400;                      // Positive is up! Use change md.flipM2(true) to false if positive is down.
   int lower_speed = -200;                     // Negative should be down.
+  uint32_t PAWL_LOCK_DELAY = 500;
+  uint32_t PAWL_UNLOCK_DELAY = 300; 
+
+//State Enums
+  enum WinchSteps {
+    IDLE,
+    JOG_UP,
+    UNLOCK,
+    MOVING,
+    HOMING_SLOW,
+    HOME_SWITCH_HIT,
+    BRAKE_AND_LOCK
+  }; //Winch Sub-steps
+  enum WinchActionType {RAISE, LOWER, HOMING, MANUAL_LOWER};
+
+//Command State
+  WinchSteps currentStep = IDLE;
+  WinchActionType winchAction = LOWER; //hardcoded right now !CHECK!
+  float depthTarget = 0.0f;
+  bool winchComplete = false;
+
+//Runtime State
+  float winchHome = 0.0f;
+  float actual_winchPos = 0.0f;
+  float winchSpeed = 0.0f;
+  float winchSpeedFiltered = 0.0f;
+  float old_winchPos = 0.0f;
+  uint32_t t_stamp = 0;                         //Timestamp used for non-blocking delays
+  uint32_t t_winch_old = 0;
+  uint32_t jogReliefDetectedMs = 0;
+  uint32_t winchControlLastMs = 0;
+  float jogStartPos = 0.0f;
+  float homingStartPos = 0.0f;
+  float homeSwitchTripPos = 0.0f;
+  float homeSlowdownPos = 0.0f;
+  int Winch_lastPos = 0;                      
+  long Winch_totalSteps = 0;                 
+
+// Not Currently used:
+
+  String winchNextState = "";
+
+// Raise and Lower Speeds
+
   const float JOG_UP_TARGET_SPEED_IN_S = 0.15f;
   const float JOG_UP_RELIEF_SPEED_IN_S = 0.05f;
   const float JOG_UP_RELIEF_DISTANCE_IN = 0.03f;
@@ -53,17 +82,14 @@
   const uint32_t JOG_UP_RELIEF_DEBOUNCE_MS = 120;
   const float JOG_UP_CMD_RATE_PER_SEC = 350.0f;
   const float JOG_UP_KP_SPEED = 900.0f;
-  const int JOG_UP_MIN_CMD = 35;
+  const int JOG_UP_MIN_CMD = 80;
+  const float HOMING_BACKOFF_DISTANCE_IN = 1.0f;
+  const float HOMING_MAX_SEARCH_TRAVEL_IN = 60.0f;
+  const float HOMING_SLOWDOWN_THRESHOLD_IN = -2.0f;
+  const float HOMING_MAX_OVERSHOOT_IN = 0.25f;
+  const int homing_slow_speed = 140;
+  const float TEST_LOWER_TARGET_IN = -10.0f;
 
-// 3. Setup AS5600 encoder over the TCA9548A I2C mux
-// Winch Sub-Steps
-  enum WinchSteps {IDLE, JOG_UP, UNLOCK, MOVING, BRAKE_AND_LOCK };
-  WinchSteps currentStep = IDLE;
-
-bool selectMuxChannel(uint8_t channel);
-int readAs5600RawAngle(uint8_t muxChannel);
-int readWinchEncoderCounts();
-int readRobotEncoderCounts();
 
 // Function prototypes
 #pragma region Function Prototypes
@@ -75,7 +101,17 @@ int winchRampToSpeedCmd(float desiredSpeed,
                         float dt_s,
                         float cmdRatePerSec,
                         float kP_speed);
+void handleTestSerial();
 void runWinchLogic();
+void resetWinchEncoderToCurrentPosition(float newZeroInches = 0.0f);
+void startWinchAction(WinchActionType action);
+void startJogUpForUnlock();
+void finishWinchAction(bool shouldLock = true);
+
+bool selectMuxChannel(uint8_t channel);
+int readAs5600RawAngle(uint8_t muxChannel);
+int readWinchEncoderCounts();
+int readRobotEncoderCounts();
 #pragma endregion
 
 
@@ -86,6 +122,7 @@ void setup() {
   md.init();           // Starts the motor shield
   md.enableDrivers();  // Turns the power on
   md.flipM2(true);
+  pinMode(WINCH_HOME_SWITCH_PIN, INPUT_PULLUP);
   pawlServo.attach(PAWL_SERVO_PIN);
   pawlServo.write(PAWL_SERVO_LOCK_POS);  // Start Locked
   // pawlServo.write(130);  // Start Unlocked
@@ -111,6 +148,7 @@ void loop() {
   }
 // Main Loop
   runWinchLogic();
+
   Serial.print("Pos: ");
   Serial.print(actual_winchPos);
   Serial.print(" | Speed: ");
@@ -118,28 +156,38 @@ void loop() {
   Serial.print(", ");
   Serial.print(winchSpeedFiltered);
   Serial.print(" | State: ");
-  Serial.println(currentStep);
-  // getEncoderDepth();
+  Serial.print(currentStep);
+  if (digitalRead(WINCH_HOME_SWITCH_PIN) == LOW) {
+    Serial.print(" | HOME");
+  }
+  Serial.println();
 
-  // Testing code outside of idle case
-    if (Serial.available() > 0) {
-      char c = Serial.read();
-      if (c == 'j') {
-        currentStep = JOG_UP;
-        t_stamp = millis();
-        jogStartPos = actual_winchPos;
-        jogReliefDetectedMs = 0;
-      }
-      else if (c == 'u' && currentStep == IDLE) {md.setM2Speed(200);}
-      else if (c == 'd'&& currentStep == IDLE) {md.setM2Speed(-100);}
-      else if (c == 'x') { 
-        md.setM2Speed(0);
-        currentStep = BRAKE_AND_LOCK;
-      }
-    }
-    //End testing code
-    #pragma endregion
+  handleTestSerial();
+
+  #pragma endregion
 }
+
+void handleTestSerial() {
+  if (Serial.available() <= 0) return;
+
+  char c = Serial.read();
+  if (c == 'j') {
+    startJogUpForUnlock();
+  }
+  else if (c == 'u') {
+    startWinchAction(RAISE);
+  }
+  else if (c == 'd') {
+    startWinchAction(MANUAL_LOWER);
+  }
+  else if (c == 'x') {
+    finishWinchAction(true);
+  }
+  else if (c == 'h') {
+    startWinchAction(HOMING);
+  }
+}
+
 //Winch speed & Pos functions
   #pragma region WinchSpeed&PosFunctions
   bool selectMuxChannel(uint8_t channel) {
@@ -217,7 +265,7 @@ void loop() {
   }
 
   float getWinchSpeedFromPos(float currentPosInches){ 
-    float t_new = millis(); 
+    uint32_t t_new = millis(); 
     winchSpeed = ((old_winchPos - currentPosInches)*1000.0)/(t_winch_old - t_new); 
     t_winch_old = t_new; 
     old_winchPos = currentPosInches; 
@@ -275,6 +323,62 @@ void loop() {
 
     return v_filt;
   }
+
+  void resetWinchEncoderToCurrentPosition(float newZeroInches) {
+    int currentRaw = readWinchEncoderCounts();
+    if (currentRaw >= 0) {
+      Winch_lastPos = currentRaw;
+    }
+
+    const float circumference = 2.0f * PI * drum_radius;
+    if (circumference <= 0.0f) {
+      Winch_totalSteps = 0;
+    } else {
+      Winch_totalSteps = lround((newZeroInches / circumference) * (float)Winch_ENC_COUNTS);
+    }
+
+    actual_winchPos = newZeroInches;
+    old_winchPos = newZeroInches;
+    winchHome = newZeroInches;
+    winchSpeed = 0.0f;
+    winchSpeedFiltered = 0.0f;
+    t_winch_old = millis();
+  }
+
+  void startWinchAction(WinchActionType action) {
+    winchAction = action;
+    winchComplete = false;
+    t_stamp = millis();
+    jogStartPos = actual_winchPos;
+    homingStartPos = actual_winchPos;
+    homeSwitchTripPos = actual_winchPos;
+    homeSlowdownPos = HOMING_SLOWDOWN_THRESHOLD_IN;
+    jogReliefDetectedMs = 0;
+    winchControlLastMs = millis();
+
+    if (action == LOWER) {
+      depthTarget = TEST_LOWER_TARGET_IN;
+      currentStep = JOG_UP;
+    } else if (action == HOMING) {
+      currentStep = MOVING;
+    } else {
+      currentStep = MOVING;
+    }
+  }
+
+  void startJogUpForUnlock() {
+    startWinchAction(LOWER);
+  }
+
+  void finishWinchAction(bool shouldLock) {
+    md.setM2Speed(0);
+    if (shouldLock) {
+      currentStep = BRAKE_AND_LOCK;
+    } else {
+      currentStep = IDLE;
+      winchComplete = true;
+    }
+  }
   #pragma endregion 
 
 // Winch Control Functions 
@@ -317,7 +421,9 @@ void loop() {
     cmdOut += delta;
 
     // Deadband near zero to prevent chatter
-    if (fabs(cmdOut) < 2.0f) cmdOut = 0.0f;
+    // Only apply the output deadband when we are actually asking to settle near zero.
+    // Otherwise a fast loop can keep resetting small ramp-up steps back to zero forever.
+    if (fabs(cmdTarget) < 2.0f && fabs(cmdOut) < 2.0f) cmdOut = 0.0f;
 
     return (int)cmdOut;
   }
@@ -330,28 +436,10 @@ void runWinchLogic() {
 
     case IDLE:
       // Do nothing until the Manager sends a command
-      // Default Case is idle. Add individual testing commands BELOW:
-
-      //Testing Code:
-      if (Serial.available() > 0) {
-      char c = Serial.read();
-      if (c == 'j') {
-        currentStep = JOG_UP;
-        t_stamp = millis();
-        jogStartPos = actual_winchPos;
-        jogReliefDetectedMs = 0;
-      }
-      else if (c == 'u') {md.setM2Speed(200);}
-      else if (c == 'd') {md.setM2Speed(-100);}
-      else if (c == 'x') { md.setM2Speed(0);}
-      }
-      //End Testing Code
-
-
+      // Default Case is idle.
       break;
 
     case JOG_UP:
-      // Nudge upward at the lowest command that still produces real motion.
       {
         uint32_t nowMs = millis();
         float dt_s = (nowMs - winchControlLastMs) / 1000.0f;
@@ -368,16 +456,14 @@ void runWinchLogic() {
         md.setM2Speed(jogCmd);
 
         float jogTravel = actual_winchPos - jogStartPos;
-        bool reliefEvidence =
-          (jogTravel >= JOG_UP_RELIEF_DISTANCE_IN) &&
-          (winchSpeedFiltered >= JOG_UP_RELIEF_SPEED_IN_S);
+        bool reliefEvidence = (jogTravel >= JOG_UP_RELIEF_DISTANCE_IN);
 
         if (reliefEvidence) {
           if (jogReliefDetectedMs == 0) jogReliefDetectedMs = nowMs;
           if ((nowMs - jogReliefDetectedMs) >= JOG_UP_RELIEF_DEBOUNCE_MS) {
             pawlServo.write(PAWL_SERVO_OPEN_POS);
-            currentStep = UNLOCK;
             t_stamp = nowMs;
+            currentStep = UNLOCK;
           }
         } else {
           jogReliefDetectedMs = 0;
@@ -385,18 +471,15 @@ void runWinchLogic() {
 
         if (jogTravel >= JOG_UP_MAX_TRAVEL_IN) {
           pawlServo.write(PAWL_SERVO_OPEN_POS);
-          md.setM2Speed(0);
-          currentStep = UNLOCK;
           t_stamp = nowMs;
+          currentStep = UNLOCK;
         }
       }
-      
       break;
 
     case UNLOCK:
-      //Unlock pawl arm with the servo
-      pawlServo.write(PAWL_SERVO_OPEN_POS);  // Disengage servo pawl
-      if (millis() - t_stamp >= 300){ //!CHECK! change to not hard coded variable
+      pawlServo.write(PAWL_SERVO_OPEN_POS);
+      if (millis() - t_stamp >= PAWL_UNLOCK_DELAY){
         md.setM2Speed(0);
         currentStep = MOVING;
         t_stamp = millis();
@@ -404,22 +487,77 @@ void runWinchLogic() {
       break;
 
     case MOVING:
-      winchAction = "lower"; //!CHECK! hardcoded for now
-      depthTarget = -10.0; //!CHECK! hardcoded for now
-      if (winchAction == "lower") {
+      if (winchAction == LOWER) {
         md.setM2Speed(lower_speed);
-        if (actual_winchPos <= depthTarget) currentStep = BRAKE_AND_LOCK;
-      }
-      if (winchAction == "raise") {
+        if (actual_winchPos <= depthTarget) {
+          currentStep = BRAKE_AND_LOCK;
+        }
+      } else if (winchAction == RAISE) {
         md.setM2Speed(raise_speed);
-        if (actual_winchPos >= winchHome) currentStep = BRAKE_AND_LOCK; 
+      } else if (winchAction == MANUAL_LOWER) {
+        pawlServo.write(PAWL_SERVO_OPEN_POS);
+        md.setM2Speed(lower_speed);
+      } else if (winchAction == HOMING) {
+        float homingTravel = actual_winchPos - homingStartPos;
+        if (digitalRead(WINCH_HOME_SWITCH_PIN) == LOW) {
+          md.setM2Speed(0);
+          homeSwitchTripPos = actual_winchPos;
+          pawlServo.write(PAWL_SERVO_OPEN_POS);
+          t_stamp = millis();
+          currentStep = HOME_SWITCH_HIT;
+        } else if (actual_winchPos >= homeSlowdownPos) {
+          currentStep = HOMING_SLOW;
+        } else if (homingTravel >= HOMING_MAX_SEARCH_TRAVEL_IN || actual_winchPos > HOMING_MAX_OVERSHOOT_IN) {
+          md.setM2Speed(0);
+          currentStep = BRAKE_AND_LOCK;
+          Serial.println("Homing aborted: exceeded homing safety limit.");
+        }
+        else {
+          md.setM2Speed(raise_speed);
+        }
+      }
+      break;
+
+    case HOMING_SLOW:
+      if (digitalRead(WINCH_HOME_SWITCH_PIN) == LOW) {
+        md.setM2Speed(0);
+        homeSwitchTripPos = actual_winchPos;
+        pawlServo.write(PAWL_SERVO_OPEN_POS);
+        t_stamp = millis();
+        currentStep = HOME_SWITCH_HIT;
+      } else if (((actual_winchPos - homingStartPos) >= HOMING_MAX_SEARCH_TRAVEL_IN) ||
+                 (actual_winchPos > HOMING_MAX_OVERSHOOT_IN)) {
+        md.setM2Speed(0);
+        currentStep = BRAKE_AND_LOCK;
+        Serial.println("Homing aborted: exceeded homing safety limit.");
+      } else {
+        md.setM2Speed(homing_slow_speed);
+      }
+      break;
+
+    case HOME_SWITCH_HIT:
+      pawlServo.write(PAWL_SERVO_OPEN_POS);
+      if (millis() - t_stamp < PAWL_UNLOCK_DELAY) {
+        md.setM2Speed(0);
+      } else {
+        md.setM2Speed(lower_speed);
+      }
+
+      if (actual_winchPos <= (homeSwitchTripPos - HOMING_BACKOFF_DISTANCE_IN)) {
+        md.setM2Speed(0);
+        resetWinchEncoderToCurrentPosition(0.0f);
+        currentStep = BRAKE_AND_LOCK;
+      } else if (actual_winchPos >= (homeSwitchTripPos + HOMING_MAX_OVERSHOOT_IN)) {
+        md.setM2Speed(0);
+        currentStep = BRAKE_AND_LOCK;
+        Serial.println("Homing aborted: overshot home switch trigger point.");
       }
       break;
 
     case BRAKE_AND_LOCK:
       md.setM2Speed(0);    // KEYWORD: This triggers the BRAKE
       pawlServo.write(PAWL_SERVO_LOCK_POS);  // Re-engage the mechanical lock
-      delay(500);
+      delay(PAWL_LOCK_DELAY);
       winchComplete = true;
       currentStep = IDLE;
       Serial.println("Finished!");
