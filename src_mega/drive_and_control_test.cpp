@@ -32,11 +32,17 @@ const uint32_t CONTROL_INTERVAL_MS = 20;
 const uint32_t PRINT_INTERVAL_MS = 200;
 const float TARGET_TOLERANCE_IN = 0.15f;
 const float STOP_VELOCITY_TOLERANCE_IN_S = 0.20f;
+const float MAX_CRUISE_SPEED_IN_PER_S = 24.0f;  // 2 ft/s max requirement
+const uint32_t TARGET_SETTLE_TIME_MS = 250;
 
 // ===== Controller tuning =====
-// Outer loop: real rail position -> target wheel speed.
-float kPosP = 2.5f;              // in/s commanded per inch of position error
-float maxTargetSpeedInPerS = 24.0f;
+// Motion profile: hold a requested cruise speed, then slow down near the target.
+float steadyCruiseSpeedInPerS = 12.0f;   // 1 ft/s default
+float rampUpAccelInPerS2 = 18.0f;        // acceleration limit to reduce startup slip
+float slowdownDecelInPerS2 = 20.0f;      // used to compute braking speed from remaining distance
+float finalApproachWindowIn = 2.0f;      // start extra-slow final approach inside this distance
+float finalApproachSpeedInPerS = 2.0f;   // low speed near the stop to avoid exciting the suspended load
+float stopDampingGain = 0.35f;           // subtract a bit of measured chassis velocity near target
 
 // Inner loop: wheel speed -> motor command.
 float kVelP = 24.0f;
@@ -77,6 +83,7 @@ DriveSnapshot previousState = {0.0f, 0.0f, 0.0f, 0.0f};
 
 uint32_t lastControlMs = 0;
 uint32_t lastPrintMs = 0;
+uint32_t targetSettledSinceMs = 0;
 
 char serialBuf[64];
 uint8_t serialIdx = 0;
@@ -96,8 +103,10 @@ void applyMotorCommand(int speedCmd);
 void stopDrive();
 void startManualMode(int speedCmd);
 void startPositionMove(float targetIn);
-void updateControl();
+float computeProfiledTargetSpeed(float positionErrorIn, float dtSeconds);
+void updateControl(float dtSeconds);
 bool targetReached();
+bool withinTargetSettleWindow();
 
 void handleSerialInput();
 void processCommand(char *cmd);
@@ -188,6 +197,7 @@ void stopDrive() {
   manualMotorCmd = 0;
   targetWheelSpeedInPerS = 0.0f;
   velocityIntegral = 0.0f;
+  targetSettledSinceMs = 0;
   applyMotorCommand(0);
 }
 
@@ -201,6 +211,7 @@ void resetDriveState() {
 
   velocityIntegral = 0.0f;
   targetWheelSpeedInPerS = 0.0f;
+  targetSettledSinceMs = 0;
   currentState = {0.0f, 0.0f, 0.0f, 0.0f};
   previousState = currentState;
 }
@@ -210,6 +221,7 @@ void startManualMode(int speedCmd) {
   manualMotorCmd = constrain(speedCmd, -MAX_MOTOR_CMD, MAX_MOTOR_CMD);
   velocityIntegral = 0.0f;
   targetWheelSpeedInPerS = 0.0f;
+  targetSettledSinceMs = 0;
   applyMotorCommand(manualMotorCmd);
 }
 
@@ -218,15 +230,58 @@ void startPositionMove(float targetIn) {
   targetPositionIn = targetIn;
   velocityIntegral = 0.0f;
   targetWheelSpeedInPerS = 0.0f;
+  targetSettledSinceMs = 0;
 }
 
-bool targetReached() {
+bool withinTargetSettleWindow() {
   float positionError = targetPositionIn - currentState.realPosIn;
   return fabs(positionError) <= TARGET_TOLERANCE_IN &&
          fabs(currentState.realVelInPerS) <= STOP_VELOCITY_TOLERANCE_IN_S;
 }
 
-void updateControl() {
+bool targetReached() {
+  if (!withinTargetSettleWindow()) {
+    targetSettledSinceMs = 0;
+    return false;
+  }
+
+  uint32_t nowMs = millis();
+  if (targetSettledSinceMs == 0) {
+    targetSettledSinceMs = nowMs;
+    return false;
+  }
+
+  return (nowMs - targetSettledSinceMs) >= TARGET_SETTLE_TIME_MS;
+}
+
+float computeProfiledTargetSpeed(float positionErrorIn, float dtSeconds) {
+  if (fabs(positionErrorIn) <= TARGET_TOLERANCE_IN) return 0.0f;
+
+  float requestedCruise = constrain(steadyCruiseSpeedInPerS, 0.0f, MAX_CRUISE_SPEED_IN_PER_S);
+  float brakingSpeed = sqrtf(2.0f * slowdownDecelInPerS2 * fabs(positionErrorIn));
+  float desiredSpeed = min(requestedCruise, brakingSpeed);
+
+  if (fabs(positionErrorIn) <= finalApproachWindowIn) {
+    desiredSpeed = min(desiredSpeed, finalApproachSpeedInPerS);
+  }
+
+  desiredSpeed = (positionErrorIn >= 0.0f) ? desiredSpeed : -desiredSpeed;
+
+  if (fabs(positionErrorIn) <= finalApproachWindowIn) {
+    desiredSpeed -= stopDampingGain * currentState.realVelInPerS;
+  }
+
+  if (dtSeconds <= 0.0f) return desiredSpeed;
+
+  float maxDeltaSpeed = max(0.01f, rampUpAccelInPerS2 * dtSeconds);
+  float speedDelta = desiredSpeed - targetWheelSpeedInPerS;
+  speedDelta = constrain(speedDelta, -maxDeltaSpeed, maxDeltaSpeed);
+  float profiledSpeed = targetWheelSpeedInPerS + speedDelta;
+
+  return profiledSpeed;
+}
+
+void updateControl(float dtSeconds) {
   if (controlMode == MODE_IDLE) {
     applyMotorCommand(0);
     return;
@@ -238,7 +293,7 @@ void updateControl() {
   }
 
   float positionError = targetPositionIn - currentState.realPosIn;
-  targetWheelSpeedInPerS = constrain(kPosP * positionError, -maxTargetSpeedInPerS, maxTargetSpeedInPerS);
+  targetWheelSpeedInPerS = computeProfiledTargetSpeed(positionError, dtSeconds);
 
   if (targetReached()) {
     stopDrive();
@@ -252,8 +307,13 @@ void updateControl() {
   }
 
   float velocityError = targetWheelSpeedInPerS - currentState.driveVelInPerS;
-  velocityIntegral += velocityError * CONTROL_INTERVAL_S;
-  velocityIntegral = constrain(velocityIntegral, -velIntegralLimit, velIntegralLimit);
+  bool inFinalApproach = fabs(positionError) <= finalApproachWindowIn;
+  if (!inFinalApproach) {
+    velocityIntegral += velocityError * dtSeconds;
+    velocityIntegral = constrain(velocityIntegral, -velIntegralLimit, velIntegralLimit);
+  } else {
+    velocityIntegral *= 0.85f;
+  }
 
   float cmd = (kVelP * velocityError) + (kVelI * velocityIntegral);
 
@@ -267,17 +327,21 @@ void updateControl() {
 void printHelp() {
   Serial.println("Drive + control test");
   Serial.println("Commands:");
-  Serial.println("  h              -> help");
-  Serial.println("  z              -> zero both encoders");
+  Serial.println("  h              -> print this help");
+  Serial.println("  z              -> stop and zero both encoders at the current position");
   Serial.println("  x              -> stop motor and exit control mode");
   Serial.println("  p              -> print one status line");
   Serial.println("  m <cmd>        -> manual motor command (-400 to 400)");
-  Serial.println("  g <inches>     -> closed-loop move to rail position in inches");
-  Serial.println("  kp <value>     -> set outer position gain");
+  Serial.println("  g <inches>     -> move to rail position using cruise + slowdown profile");
+  Serial.println("  ss <ft/s>      -> set requested steady speed (max 2.0 ft/s)");
+  Serial.println("  accel <in/s^2> -> set ramp-up acceleration limit");
+  Serial.println("  decel <in/s^2> -> set slowdown deceleration");
+  Serial.println("  approach <window_in> <speed_in_s> -> set final approach slowdown");
+  Serial.println("  damp <gain>    -> set stop damping gain from measured real velocity");
   Serial.println("  kvp <value>    -> set inner velocity P gain");
   Serial.println("  kvi <value>    -> set inner velocity I gain");
-  Serial.println("  vmax <value>   -> set max target wheel speed (in/s)");
-  Serial.println("  slip <warn> <slow> -> set slip warning and slowdown thresholds (in)");
+  Serial.println("  slip <warn> <slow> -> set slip warning / slowdown thresholds in inches");
+  Serial.println("Status units: pos=in, vel=in/s, accel=in/s^2, cruise=ft/s");
 }
 
 void printStatus() {
@@ -289,6 +353,14 @@ void printStatus() {
   Serial.print(appliedMotorCmd);
   Serial.print(" | TargetPos(in): ");
   Serial.print(targetPositionIn, 2);
+  Serial.print(" | Cruise(ft/s): ");
+  Serial.print(steadyCruiseSpeedInPerS / 12.0f, 3);
+  Serial.print(" | Accel(in/s^2): ");
+  Serial.print(rampUpAccelInPerS2, 2);
+  Serial.print(" | FinalWin(in): ");
+  Serial.print(finalApproachWindowIn, 2);
+  Serial.print(" | FinalVel(in/s): ");
+  Serial.print(finalApproachSpeedInPerS, 2);
   Serial.print(" | RealPos(in): ");
   Serial.print(currentState.realPosIn, 3);
   Serial.print(" | DrivePos(in): ");
@@ -301,6 +373,9 @@ void printStatus() {
   Serial.print(targetWheelSpeedInPerS, 3);
   Serial.print(" | Slip(in): ");
   Serial.print(slipIn, 3);
+  if (withinTargetSettleWindow()) {
+    Serial.print(" | SETTLING");
+  }
   if (fabs(slipIn) >= slipWarnThresholdIn) {
     Serial.print(" | SLIP");
   }
@@ -363,16 +438,75 @@ void processCommand(char *cmd) {
     return;
   }
 
-  if (strcmp(verb, "kp") == 0) {
+  if (strcmp(verb, "ss") == 0) {
     char *arg = strtok(nullptr, " ");
     if (arg == nullptr) {
-      Serial.println("Usage: kp <value>");
+      Serial.println("Usage: ss <ft/s>");
       return;
     }
 
-    kPosP = (float)atof(arg);
-    Serial.print("kPosP = ");
-    Serial.println(kPosP, 4);
+    float requestedFtPerS = (float)atof(arg);
+    steadyCruiseSpeedInPerS = constrain(requestedFtPerS * 12.0f, 0.0f, MAX_CRUISE_SPEED_IN_PER_S);
+    Serial.print("steadyCruiseSpeed = ");
+    Serial.print(steadyCruiseSpeedInPerS / 12.0f, 3);
+    Serial.println(" ft/s");
+    return;
+  }
+
+  if (strcmp(verb, "accel") == 0) {
+    char *arg = strtok(nullptr, " ");
+    if (arg == nullptr) {
+      Serial.println("Usage: accel <in/s^2>");
+      return;
+    }
+
+    rampUpAccelInPerS2 = max(1.0f, (float)atof(arg));
+    Serial.print("rampUpAccelInPerS2 = ");
+    Serial.println(rampUpAccelInPerS2, 3);
+    return;
+  }
+
+  if (strcmp(verb, "decel") == 0) {
+    char *arg = strtok(nullptr, " ");
+    if (arg == nullptr) {
+      Serial.println("Usage: decel <in/s^2>");
+      return;
+    }
+
+    slowdownDecelInPerS2 = max(1.0f, (float)atof(arg));
+    Serial.print("slowdownDecelInPerS2 = ");
+    Serial.println(slowdownDecelInPerS2, 3);
+    return;
+  }
+
+  if (strcmp(verb, "approach") == 0) {
+    char *windowArg = strtok(nullptr, " ");
+    char *speedArg = strtok(nullptr, " ");
+    if (windowArg == nullptr || speedArg == nullptr) {
+      Serial.println("Usage: approach <window_in> <speed_in_s>");
+      return;
+    }
+
+    finalApproachWindowIn = max(TARGET_TOLERANCE_IN * 2.0f, (float)atof(windowArg));
+    finalApproachSpeedInPerS = max(0.1f, (float)atof(speedArg));
+    Serial.print("Final approach window/speed = ");
+    Serial.print(finalApproachWindowIn, 3);
+    Serial.print(" in / ");
+    Serial.print(finalApproachSpeedInPerS, 3);
+    Serial.println(" in/s");
+    return;
+  }
+
+  if (strcmp(verb, "damp") == 0) {
+    char *arg = strtok(nullptr, " ");
+    if (arg == nullptr) {
+      Serial.println("Usage: damp <gain>");
+      return;
+    }
+
+    stopDampingGain = max(0.0f, (float)atof(arg));
+    Serial.print("stopDampingGain = ");
+    Serial.println(stopDampingGain, 4);
     return;
   }
 
@@ -399,19 +533,6 @@ void processCommand(char *cmd) {
     kVelI = (float)atof(arg);
     Serial.print("kVelI = ");
     Serial.println(kVelI, 4);
-    return;
-  }
-
-  if (strcmp(verb, "vmax") == 0) {
-    char *arg = strtok(nullptr, " ");
-    if (arg == nullptr) {
-      Serial.println("Usage: vmax <value>");
-      return;
-    }
-
-    maxTargetSpeedInPerS = (float)atof(arg);
-    Serial.print("maxTargetSpeedInPerS = ");
-    Serial.println(maxTargetSpeedInPerS, 3);
     return;
   }
 
@@ -460,7 +581,7 @@ void setup() {
 
   md.init();
   md.enableDrivers();
-  md.flipM2(FLIP_DRIVE_MOTOR);
+  md.flipM1(FLIP_DRIVE_MOTOR);
 
   resetDriveState();
   lastControlMs = millis();
@@ -485,7 +606,7 @@ void loop() {
     lastControlMs = nowMs;
 
     refreshSensors(dtSeconds);
-    updateControl();
+    updateControl(dtSeconds);
   }
 
   if (nowMs - lastPrintMs >= PRINT_INTERVAL_MS) {
