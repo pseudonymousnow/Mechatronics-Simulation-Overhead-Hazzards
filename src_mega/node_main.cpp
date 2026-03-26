@@ -21,6 +21,7 @@
  *    To use: set `currentState = TEST_MODE;` below before upload.
  ************************************************************/
 
+#pragma region Includes/Variable_Declarations/Definitions
 /* ========================= Includes ========================= */
   #include <Arduino.h>
   #include <string.h>
@@ -145,6 +146,9 @@
   const uint8_t PIN_LIMIT_SIDE0 = 0;    // !CHECK! contact switch for SIDE_0 end
   const uint8_t PIN_LIMIT_SIDE1 = 0;    // !CHECK! contact switch for SIDE_1 end
 
+#pragma endregion
+
+#pragma region Function_Prototypes
 /* ========================= Function Prototypes ========================= */
   /* ---- Wireless ---- */
     void checkWireless();
@@ -202,6 +206,11 @@
   /* ---- TEST MODE ---- */
     void testModeService();
 
+#pragma endregion
+
+#pragma region Function_Definitions
+
+  #pragma region Wireless_Communication_Functions
 /* ========================= Utility ========================= */
   bool isWs(char c) { return (c == ' ' || c == '\t' || c == '\r' || c == '\n'); }
 
@@ -549,6 +558,9 @@
     return false;
   }
 
+  #pragma endregion
+
+  #pragma region Battery/Emergency_Stop_Functions
   /* ========================= Battery / Emergency Stop ========================= */
     bool battery_too_low() {
       // STUB: implement your battery divider + threshold here.
@@ -568,7 +580,10 @@
       stopWinchMotor();
       lockWinchPawl();
     }
+  
+  #pragma endregion
 
+  #pragma region Winch_Functions
 /* ========================= Winch Stubs ========================= */
   void winchStartAction(WinchAction action, float target, NodeState nextState) {
     winchAction = action;
@@ -635,6 +650,10 @@
     return true;
   }
 
+  #pragma endregion
+
+  #pragma region Drive_Functions
+
 /* ========================= Drive Stubs ========================= */
   void driveStartTowardOppositeSide() {
     // STUB: decide opposite based on currentSide, then call driveStartTowardSide()
@@ -682,6 +701,10 @@
     // STUB: set driveWheel and truePosition encoders to 0
   }
 
+  #pragma endregion
+
+  #pragma region Runtime_Functions
+
 /* ========================= Run Helpers ========================= */
   bool destinationIsStartSide() {
     // STUB: define your experiment logic here.
@@ -725,6 +748,10 @@
     measuredWinchHeightBeforeTranslation = run.winchHeightCmd;
     measuredWinchMaxDepth = run.winchHeightCmd + run.lowerLoadDepthCmd; // placeholder
   }
+
+  #pragma endregion
+
+  #pragma region Test_Mode_Functions
 
 /* ========================= TEST MODE ========================= */
   void testModeService() {
@@ -804,6 +831,10 @@
     }
   }
 
+  #pragma endregion
+#pragma endregion //the function declaration region
+
+#pragma region Setup_Function
 /* ========================= Setup / Loop ========================= */
   void setup() {
     Serial.begin(115200);
@@ -820,7 +851,9 @@
     stopWinchMotor();
     lockWinchPawl();
   }
+  #pragma endregion
 
+#pragma region Main_Loop
   void loop() {
     /* ---------- Global checks ---------- */
     checkWireless();
@@ -1053,3 +1086,4 @@
             break;
       }
   }
+#pragma endregion
