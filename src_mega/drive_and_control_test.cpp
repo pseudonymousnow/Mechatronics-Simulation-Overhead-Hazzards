@@ -84,6 +84,7 @@ DriveSnapshot previousState = {0.0f, 0.0f, 0.0f, 0.0f};
 uint32_t lastControlMs = 0;
 uint32_t lastPrintMs = 0;
 uint32_t targetSettledSinceMs = 0;
+bool forceStatusStreaming = false;
 
 char serialBuf[64];
 uint8_t serialIdx = 0;
@@ -112,6 +113,7 @@ void handleSerialInput();
 void processCommand(char *cmd);
 void printHelp();
 void printStatus();
+bool shouldPrintStatusStream();
 
 bool selectMuxChannel(uint8_t channel) {
   if (channel > 7) return false;
@@ -331,6 +333,7 @@ void printHelp() {
   Serial.println("  z              -> stop and zero both encoders at the current position");
   Serial.println("  x              -> stop motor and exit control mode");
   Serial.println("  p              -> print one status line");
+  Serial.println("  stream [on|off]-> force periodic status printing on or off");
   Serial.println("  m <cmd>        -> manual motor command (-400 to 400)");
   Serial.println("  g <inches>     -> move to rail position using cruise + slowdown profile");
   Serial.println("  ss <ft/s>      -> set requested steady speed (max 2.0 ft/s)");
@@ -342,6 +345,10 @@ void printHelp() {
   Serial.println("  kvi <value>    -> set inner velocity I gain");
   Serial.println("  slip <warn> <slow> -> set slip warning / slowdown thresholds in inches");
   Serial.println("Status units: pos=in, vel=in/s, accel=in/s^2, cruise=ft/s");
+}
+
+bool shouldPrintStatusStream() {
+  return forceStatusStreaming || (appliedMotorCmd != 0);
 }
 
 void printStatus() {
@@ -408,6 +415,27 @@ void processCommand(char *cmd) {
 
   if (strcmp(verb, "p") == 0) {
     printStatus();
+    return;
+  }
+
+  if (strcmp(verb, "stream") == 0) {
+    char *arg = strtok(nullptr, " ");
+    if (arg == nullptr) {
+      forceStatusStreaming = !forceStatusStreaming;
+    } else if (strcmp(arg, "on") == 0) {
+      forceStatusStreaming = true;
+    } else if (strcmp(arg, "off") == 0) {
+      forceStatusStreaming = false;
+    } else {
+      Serial.println("Usage: stream [on|off]");
+      return;
+    }
+
+    Serial.print("Periodic status streaming ");
+    Serial.println(forceStatusStreaming ? "ON" : "AUTO");
+    if (forceStatusStreaming) {
+      printStatus();
+    }
     return;
   }
 
@@ -611,6 +639,8 @@ void loop() {
 
   if (nowMs - lastPrintMs >= PRINT_INTERVAL_MS) {
     lastPrintMs = nowMs;
-    printStatus();
+    if (shouldPrintStatusStream()) {
+      printStatus();
+    }
   }
 }
