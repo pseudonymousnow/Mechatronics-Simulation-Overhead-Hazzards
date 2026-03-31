@@ -368,6 +368,8 @@ void printStatus() {
   Serial.print(finalApproachWindowIn, 2);
   Serial.print(" | FinalVel(in/s): ");
   Serial.print(finalApproachSpeedInPerS, 2);
+  Serial.print(" | DampingGain: ");
+  Serial.print(stopDampingGain, 3);
   Serial.print(" | RealPos(in): ");
   Serial.print(currentState.realPosIn, 3);
   Serial.print(" | DrivePos(in): ");
