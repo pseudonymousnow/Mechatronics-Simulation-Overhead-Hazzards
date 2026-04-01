@@ -26,27 +26,94 @@ float getAbsolutePositionAlongProfile(const TrajectoryProfile &profile, float pa
   return profile.startPosition + (pathDistance * profile.direction);
 }
 
+/*
+  Ramp controller state lives at file scope because the controller needs to
+  remember values from one update call to the next.
+
+  These are kept inside the anonymous namespace so they stay private to this
+  file until the DriveControl library grows into a larger class-based design.
+*/
+
+// Controller gains. These all default to zero until the caller sets them.
+float rampKp = 0.0f;
+float rampKi = 0.0f;
+float rampKd = 0.0f;
+
+// Only accumulate integral error while the position error is inside this window.
+float rampIntegralWindow = 0.0f;
+
+// PID state carried between control updates.
+float rampError = 0.0f;
+float prevRampError = 0.0f;
+float rampIntError = 0.0f;
+
+// Individual PID term values are stored separately to aid debugging and tuning.
+float rampPTerm = 0.0f;
+float rampITerm = 0.0f;
+float rampDError_dt = 0.0f;
+float rampDTerm = 0.0f;
+
+// Output motor command from the PID controller.
+int rampMtrCmd = 0;
+
+// Timing values used to compute elapsed time between PID updates.
+float T = 0.0f;
+float T0 = 0.0f;
+float TOld = 0.0f;
+bool rampTimingInitialized = false;
+
 }  // namespace
 
 #pragma region PID Controller
 
-int rampControl(float rampPosDes){
+int rampControl(float rampPosDes, float rampPosReal){
+  /*
+    The controller operates on elapsed time since the first PID update, not on
+    raw Arduino uptime. The first call initializes the reference time.
+
+    rampPosReal is provided by the caller so this controller stays independent
+    from the code that owns the real-position sensor hardware.
+  */
+  if (!rampTimingInitialized) {
+    T0 = micros() / 1000000.0f;
+    T = 0.0f;
+    TOld = 0.0f;
+    rampTimingInitialized = true;
+  }
 
   T = micros()/1000000.0 - T0;
   
   float deltaPTime = T - TOld;
 
-  rampError = rampPosDes - rampEncCount;
+  rampError = rampPosDes - rampPosReal;
   rampPTerm = rampKp*rampError;
 
-  if (abs(rampError) < rampIntegralWindow){
+  /*
+    Integral accumulation is only allowed inside the configured error window.
+    This reduces the chance of the integral term building up while the system
+    is still far away from the target.
+
+    The Ki == 0 guard prevents division-by-zero in the clamp calculation while
+    the controller is still using its default zero gains.
+  */
+  if (fabsf(rampError) < rampIntegralWindow && rampKi != 0.0f){
     rampIntError = rampIntError + rampError*deltaPTime;
-    constrain(rampIntError, -400.0f/rampKi, 400.0f/rampKi);
+    rampIntError = constrain(rampIntError, -400.0f/fabsf(rampKi), 400.0f/fabsf(rampKi));
     rampITerm = rampIntError*rampKi;
+  } else {
+    rampITerm = 0.0f;
   }
 
-  rampDError_dt = (rampError - prevRampError) / deltaPTime;
-  rampDTerm = rampKd*rampDError_dt;
+  /*
+    Derivative uses the change in error over time. If two updates happen at the
+    same timestamp, treat the derivative as zero to avoid dividing by zero.
+  */
+  if (deltaPTime > 0.0f) {
+    rampDError_dt = (rampError - prevRampError) / deltaPTime;
+  } else {
+    rampDError_dt = 0.0f;
+  }
+  rampDTerm = rampKd * rampDError_dt;
 
   rampMtrCmd = constrain(rampPTerm + rampITerm + rampDTerm, -400, 400);
 
@@ -55,6 +122,49 @@ int rampControl(float rampPosDes){
 
   return rampMtrCmd;
 
+}
+
+#pragma endregion
+
+#pragma region Helpers
+
+/*
+  Set the ramp controller gains.
+
+  This helper only updates the tuning values. It does not reset the controller
+  history, which allows gain changes during tuning without erasing the stored
+  error terms unless a separate reset helper is added later.
+*/
+void setRampControlGains(float kp, float ki, float kd) {
+  rampKp = kp;
+  rampKi = ki;
+  rampKd = kd;
+}
+
+/*
+  Reset all stored controller history that depends on previous updates.
+
+  This is useful before starting a new move or whenever the caller wants to
+  discard old integral, derivative, and timing history. The gains and integral
+  window are intentionally left alone because they are controller settings, not
+  transient runtime state.
+*/
+void resetRampController() {
+  rampError = 0.0f;
+  prevRampError = 0.0f;
+  rampIntError = 0.0f;
+
+  rampPTerm = 0.0f;
+  rampITerm = 0.0f;
+  rampDError_dt = 0.0f;
+  rampDTerm = 0.0f;
+
+  rampMtrCmd = 0;
+
+  T = 0.0f;
+  T0 = 0.0f;
+  TOld = 0.0f;
+  rampTimingInitialized = false;
 }
 
 #pragma endregion

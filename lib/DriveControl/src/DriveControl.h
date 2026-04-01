@@ -63,6 +63,36 @@ struct TrajectoryProfile {
 };
 
 /*
+  Compute the ramp controller motor command for a requested position.
+
+  rampPosDes is the desired position for the current control update.
+  rampPosReal is the measured real position supplied by the caller.
+
+  The measured position is passed in as a function argument so sensor handling
+  can remain in a separate library. This function returns the motor command
+  after applying the P, I, and D terms.
+*/
+int rampControl(float rampPosDes, float rampPosReal);
+
+/*
+  Update the ramp controller gains.
+
+  All gains default to 0.0f until this helper is called. Keeping the gains in a
+  dedicated helper makes it easier for setup code to configure the controller
+  from one place.
+*/
+void setRampControlGains(float kp, float ki, float kd);
+
+/*
+  Reset the stored ramp controller state.
+
+  This clears the accumulated controller history so the next call to
+  rampControl starts fresh. The gains are left unchanged so tuning values do
+  not need to be reapplied after every reset.
+*/
+void resetRampController();
+
+/*
   Build a trapezoidal or triangular position trajectory in absolute space.
 
   The move begins at startPosition, accelerates at maxAcceleration, cruises at
