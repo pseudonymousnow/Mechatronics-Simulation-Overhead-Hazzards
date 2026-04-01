@@ -142,6 +142,46 @@ void setRampControlGains(float kp, float ki, float kd) {
 }
 
 /*
+  Update only the proportional gain.
+
+  This is primarily a tuning convenience helper for testing, where the caller
+  may want to adjust one gain at a time without re-sending the others.
+*/
+void setRampControlKp(float kp) {
+  rampKp = kp;
+}
+
+/*
+  Update only the integral gain.
+
+  Keeping Ki configurable on its own makes it easy to temporarily disable or
+  re-enable integral action while testing the controller.
+*/
+void setRampControlKi(float ki) {
+  rampKi = ki;
+}
+
+/*
+  Update only the derivative gain.
+
+  This helper supports derivative tuning without changing the proportional or
+  integral terms.
+*/
+void setRampControlKd(float kd) {
+  rampKd = kd;
+}
+
+/*
+  Set the allowable error window for integral accumulation.
+
+  Only the magnitude of the window matters, so the stored value is forced to be
+  non-negative even if a negative number is provided by mistake.
+*/
+void setRampIntegralWindow(float integralWindow) {
+  rampIntegralWindow = fabsf(integralWindow);
+}
+
+/*
   Reset all stored controller history that depends on previous updates.
 
   This is useful before starting a new move or whenever the caller wants to

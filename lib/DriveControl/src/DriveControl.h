@@ -84,6 +84,39 @@ int rampControl(float rampPosDes, float rampPosReal);
 void setRampControlGains(float kp, float ki, float kd);
 
 /*
+  Update the proportional gain only.
+
+  A single-gain helper is useful during tuning because it allows test code to
+  change just one term without needing to resend the other two values.
+*/
+void setRampControlKp(float kp);
+
+/*
+  Update the integral gain only.
+
+  Keeping this separate from the combined gain setter makes it easier to enable
+  or disable integral action during testing.
+*/
+void setRampControlKi(float ki);
+
+/*
+  Update the derivative gain only.
+
+  This helper supports quick derivative tuning without disturbing the other
+  controller gains.
+*/
+void setRampControlKd(float kd);
+
+/*
+  Set the size of the error window in which integral accumulation is allowed.
+
+  The controller only grows the integral term when the absolute position error
+  is smaller than this window. This helps reduce integral windup when the robot
+  is still far from the target.
+*/
+void setRampIntegralWindow(float integralWindow);
+
+/*
   Reset the stored ramp controller state.
 
   This clears the accumulated controller history so the next call to
