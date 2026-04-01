@@ -11,3 +11,7 @@
 ## If Time Allows
 
 - [ ] Create header and source files for wireless communication.
+
+## Winch Desired Behavior
+
+- there should be a functions to
