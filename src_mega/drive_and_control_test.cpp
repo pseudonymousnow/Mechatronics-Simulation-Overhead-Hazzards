@@ -48,6 +48,9 @@ float stopDampingGain = 0.35f;           // subtract a bit of measured chassis v
 float kVelP = 24.0f;
 float kVelI = 10.0f;
 float velIntegralLimit = 250.0f;
+int minStartCmdFwd = 90;
+int minStartCmdRev = 90;
+float startVelThresholdInPerS = 0.25f;
 
 // Slip monitor: compare wheel estimate against real rail estimate.
 float slipWarnThresholdIn = 0.75f;
@@ -105,6 +108,7 @@ void stopDrive();
 void startManualMode(int speedCmd);
 void startPositionMove(float targetIn);
 float computeProfiledTargetSpeed(float positionErrorIn, float dtSeconds);
+float applyMinimumStartCommand(float cmd);
 void updateControl(float dtSeconds);
 bool targetReached();
 bool withinTargetSettleWindow();
@@ -283,6 +287,22 @@ float computeProfiledTargetSpeed(float positionErrorIn, float dtSeconds) {
   return profiledSpeed;
 }
 
+float applyMinimumStartCommand(float cmd) {
+  // Add a directional breakaway command when the controller wants motion
+  // but the drivetrain is still essentially stationary.
+  if (fabs(targetWheelSpeedInPerS) <= 0.05f ||
+      fabs(currentState.driveVelInPerS) >= startVelThresholdInPerS) {
+    return cmd;
+  }
+
+  int minStartCmd = (targetWheelSpeedInPerS >= 0.0f) ? minStartCmdFwd : minStartCmdRev;
+  if (fabs(cmd) < (float)minStartCmd) {
+    return (targetWheelSpeedInPerS >= 0.0f) ? (float)minStartCmd : (float)(-minStartCmd);
+  }
+
+  return cmd;
+}
+
 void updateControl(float dtSeconds) {
   if (controlMode == MODE_IDLE) {
     applyMotorCommand(0);
@@ -318,6 +338,7 @@ void updateControl(float dtSeconds) {
   }
 
   float cmd = (kVelP * velocityError) + (kVelI * velocityIntegral);
+  cmd = applyMinimumStartCommand(cmd);
 
   if (fabs(targetWheelSpeedInPerS) < 0.05f) {
     velocityIntegral = 0.0f;
@@ -343,6 +364,7 @@ void printHelp() {
   Serial.println("  damp <gain>    -> set stop damping gain from measured real velocity");
   Serial.println("  kvp <value>    -> set inner velocity P gain");
   Serial.println("  kvi <value>    -> set inner velocity I gain");
+  Serial.println("  startcmd <fwd> [rev] -> set directional minimum startup command");
   Serial.println("  slip <warn> <slow> -> set slip warning / slowdown thresholds in inches");
   Serial.println("Status units: pos=in, vel=in/s, accel=in/s^2, cruise=ft/s");
 }
@@ -370,6 +392,10 @@ void printStatus() {
   Serial.print(finalApproachSpeedInPerS, 2);
   Serial.print(" | DampingGain: ");
   Serial.print(stopDampingGain, 3);
+  Serial.print(" | StartCmd(F/R): ");
+  Serial.print(minStartCmdFwd);
+  Serial.print("/");
+  Serial.print(minStartCmdRev);
   Serial.print(" | RealPos(in): ");
   Serial.print(currentState.realPosIn, 3);
   Serial.print(" | DrivePos(in): ");
@@ -563,6 +589,26 @@ void processCommand(char *cmd) {
     kVelI = (float)atof(arg);
     Serial.print("kVelI = ");
     Serial.println(kVelI, 4);
+    return;
+  }
+
+  if (strcmp(verb, "startcmd") == 0) {
+    char *fwdArg = strtok(nullptr, " ");
+    char *revArg = strtok(nullptr, " ");
+    if (fwdArg == nullptr) {
+      Serial.println("Usage: startcmd <fwd> [rev]");
+      return;
+    }
+
+    minStartCmdFwd = constrain(abs(atoi(fwdArg)), 0, MAX_MOTOR_CMD);
+    minStartCmdRev = (revArg == nullptr)
+      ? minStartCmdFwd
+      : constrain(abs(atoi(revArg)), 0, MAX_MOTOR_CMD);
+
+    Serial.print("Minimum startup command F/R = ");
+    Serial.print(minStartCmdFwd);
+    Serial.print(" / ");
+    Serial.println(minStartCmdRev);
     return;
   }
 
