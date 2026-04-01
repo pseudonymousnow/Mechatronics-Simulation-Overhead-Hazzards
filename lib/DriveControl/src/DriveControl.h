@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /*
   DriveControl.h
@@ -61,6 +62,81 @@ struct TrajectoryProfile {
   bool reachesSteadyStateSpeed;
   bool isValid;
 };
+
+/*
+  Configure the drive system's independent real-position sensor.
+
+  This helper groups the drive-specific encoder and mechanical calibration in
+  one place so setup code can describe the full sensor arrangement with a
+  single call.
+
+  wheelRadiusIn should be the radius of the passive measurement wheel that is
+  driven by the rail, not the powered drive wheel.
+*/
+void setDriveRealPositionSensorParameters(uint8_t muxChannel,
+                                          float wheelRadiusIn,
+                                          int countsPerRevolution,
+                                          int wrapThreshold,
+                                          int noiseThreshold,
+                                          uint8_t muxAddress = 0x70,
+                                          uint8_t sensorAddress = 0x36,
+                                          uint8_t rawAngleRegister = 0x0C);
+
+/*
+  Configure the FIR filter used for the real-position signal.
+
+  FIR stands for Finite Impulse Response. In practice this means the filtered
+  position is a weighted combination of the most recent position samples.
+
+  coefficientCount must be greater than zero and no larger than the internal
+  library limit. The coefficients are copied into the library, so the caller
+  does not need to keep the original array alive after this function returns.
+*/
+void setDriveRealPositionFirParameters(const float *coefficients,
+                                       uint8_t coefficientCount);
+
+/*
+  Reset the drive real-position tracker so the current sensor position becomes
+  a known reference point.
+
+  newZeroPositionIn is the physical position value that should be reported
+  immediately after the reset. Passing 0.0f creates a normal zeroing action.
+*/
+bool resetDriveRealPositionSensor(float newZeroPositionIn = 0.0f);
+
+/*
+  Reset only the tracked continuous encoder counts used by the drive real-
+  position sensor.
+
+  This is a lower-level helper than resetDriveRealPositionSensor(). It keeps
+  the existing position offset/calibration, but clears the accumulated count
+  total and re-anchors the unwrap logic to the encoder's current raw reading.
+
+  newZeroCounts is the count value that should be stored immediately after the
+  reset. Passing 0 performs a standard encoder zero.
+*/
+bool resetDriveRealPositionCounts(long newZeroCounts = 0);
+
+/*
+  Read the sensor once and update the stored raw and FIR-filtered positions.
+
+  The returned value is the unfiltered real position derived directly from the
+  sensor. The corresponding filtered value can be read afterward with
+  getDriveRealPositionFir().
+*/
+float updateDriveRealPositionFromSensor();
+
+// Return the most recently computed unfiltered real position.
+float getDriveRealPosition();
+
+// Return the most recently computed FIR-filtered real position.
+float getDriveRealPositionFir();
+
+// Return the most recent continuous encoder count used for real position.
+long getDriveRealPositionCounts();
+
+// Return whether the most recent real-position sensor read succeeded.
+bool didDriveRealPositionReadSucceed();
 
 /*
   Compute the ramp controller motor command for a requested position.
