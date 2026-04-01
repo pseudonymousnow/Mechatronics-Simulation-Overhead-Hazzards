@@ -32,8 +32,8 @@ const uint8_t WINCH_HOME_SWITCH_PIN = 3;
 /*
   Servo positions copied from the original winch_test.cpp.
 */
-const uint8_t PAWL_SERVO_LOCK_POS = 70;
-const uint8_t PAWL_SERVO_OPEN_POS = 130;
+const uint8_t PAWL_SERVO_LOCK_POS = 120;
+const uint8_t PAWL_SERVO_OPEN_POS = 180;
 
 /*
   I2C / encoder configuration copied from the original winch_test.cpp.
@@ -50,7 +50,7 @@ const int WINCH_NOISE_THRESHOLD = 4;
 /*
   Mechanical calibration copied from the original winch_test.cpp.
 */
-const float WINCH_DRUM_RADIUS_IN = (1.486f / 2.0f) + (1.0f / 32.0f);
+const float WINCH_DRUM_RADIUS_IN = (1.502f / 2.0f) + (1.0f / 32.0f);
 
 /*
   Motor commands and timing values copied from the original winch_test.cpp.
