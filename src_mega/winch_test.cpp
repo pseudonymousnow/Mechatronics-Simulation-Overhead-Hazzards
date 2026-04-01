@@ -24,6 +24,7 @@
   const int Winch_ENC_COUNTS = 4096;          // AS5600 is 12-bit
   const int WRAP_THRESH = Winch_ENC_COUNTS/2; // 2048 counts for the AS5600
   const int NOISE_THRESH = 4;                 // counts !CHECK!
+  const bool FLIP_WINCH_ENCODER_SIGN = true;  // Encoder moved to the opposite side of the axle.
 
 // Mechanical calibrations
   float drum_radius = (1.486f/2.0f) + (1.0f/32.0f);       // Inches adding width of cable !CHECK!
@@ -246,6 +247,10 @@ void handleTestSerial() {
       delta -= Winch_ENC_COUNTS;
     } else if (delta < -WRAP_THRESH) {
       delta += Winch_ENC_COUNTS;
+    }
+
+    if (FLIP_WINCH_ENCODER_SIGN) {
+      delta = -delta;
     }
 
     // noise gate

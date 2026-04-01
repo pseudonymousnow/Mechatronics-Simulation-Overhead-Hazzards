@@ -39,6 +39,7 @@ WinchMotionConfig winchMotionConfig = {0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.
 WinchSpeedFilterConfig winchSpeedFilterConfig = {0, 0.0f};
 WinchHomingConfig winchHomingConfig = {0.0f, 0.0f, 0.0f, 0.0f};
 float winchDrumRadiusIn = 0.0f;
+bool winchEncoderDirectionInverted = false;
 
 EncoderMuxConfig winchEncoderConfig = {};
 EncoderMuxState winchEncoderState = {};
@@ -100,8 +101,11 @@ float convertWinchCountsToInches(long encoderCounts) {
     return 0.0f;
   }
 
+  const float signedEncoderCounts = winchEncoderDirectionInverted
+                                        ? -(float)encoderCounts
+                                        : (float)encoderCounts;
   const float shaftRevolutions =
-      ((float)encoderCounts) / (float)winchEncoderConfig.countsPerRevolution;
+      signedEncoderCounts / (float)winchEncoderConfig.countsPerRevolution;
   return shaftRevolutions * circumferenceIn;
 }
 
@@ -112,7 +116,10 @@ long convertWinchInchesToCounts(float positionIn) {
     return 0;
   }
 
-  return lroundf((positionIn / circumferenceIn) *
+  const float signedPositionIn =
+      winchEncoderDirectionInverted ? -positionIn : positionIn;
+
+  return lroundf((signedPositionIn / circumferenceIn) *
                  (float)winchEncoderConfig.countsPerRevolution);
 }
 
@@ -469,6 +476,7 @@ void setWinchPawlParameters(uint8_t lockPosition,
 
 void setWinchEncoderParameters(uint8_t muxChannel,
                                float drumRadiusIn,
+                               bool invertDirection,
                                int countsPerRevolution,
                                int wrapThreshold,
                                int noiseThreshold,
@@ -480,6 +488,7 @@ void setWinchEncoderParameters(uint8_t muxChannel,
   winchEncoderConfig.sensorAddress = sensorAddress;
   winchEncoderConfig.rawAngleRegister = rawAngleRegister;
   winchEncoderConfig.muxChannel = muxChannel;
+  winchEncoderDirectionInverted = invertDirection;
   winchEncoderConfig.countsPerRevolution = countsPerRevolution;
   winchEncoderConfig.wrapThreshold = wrapThreshold;
   winchEncoderConfig.noiseThreshold = noiseThreshold;

@@ -217,6 +217,7 @@ void setWinchPawlParameters(uint8_t lockPosition,
 */
 void setWinchEncoderParameters(uint8_t muxChannel,
                                float drumRadiusIn,
+                               bool invertDirection,
                                int countsPerRevolution,
                                int wrapThreshold,
                                int noiseThreshold,

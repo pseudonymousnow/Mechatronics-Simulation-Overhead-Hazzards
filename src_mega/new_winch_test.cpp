@@ -42,6 +42,7 @@ const uint8_t I2C_MUX_ADDR = 0x70;
 const uint8_t AS5600_ADDR = 0x36;
 const uint8_t AS5600_RAW_ANGLE_REG = 0x0C;
 const uint8_t WINCH_ENCODER_MUX_CH = 7;
+const bool FLIP_WINCH_ENCODER_SIGN = true;
 const int WINCH_ENCODER_COUNTS_PER_REV = 4096;
 const int WINCH_WRAP_THRESHOLD = WINCH_ENCODER_COUNTS_PER_REV / 2;
 const int WINCH_NOISE_THRESHOLD = 4;
@@ -146,6 +147,7 @@ void configureWinchControl() {
 
   setWinchEncoderParameters(WINCH_ENCODER_MUX_CH,
                             WINCH_DRUM_RADIUS_IN,
+                            FLIP_WINCH_ENCODER_SIGN,
                             WINCH_ENCODER_COUNTS_PER_REV,
                             WINCH_WRAP_THRESHOLD,
                             WINCH_NOISE_THRESHOLD,
