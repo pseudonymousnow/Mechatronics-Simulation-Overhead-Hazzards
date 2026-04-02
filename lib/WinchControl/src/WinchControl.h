@@ -298,6 +298,14 @@ bool startWinchAction(WinchActionType action);
 bool startWinchLowerToDepth(float targetDepthIn);
 
 /*
+  Move to a requested position using the existing raise/lower behavior.
+
+  If the requested position is already within a small built-in tolerance band
+  of the current position, the function completes immediately without motion.
+*/
+bool winchToPosition(float desiredPositionIn);
+
+/*
   Start the same jog-up/unlock/lower sequence that the legacy test sketch used
   for the 'j' serial command.
 */
@@ -329,7 +337,7 @@ float getWinchSpeed();
 // Return the latest filtered speed estimate in inches per second.
 float getWinchSpeedFiltered();
 
-// Return the most recent target depth used by a lower action.
+// Return the most recent target depth/position used by a position-stopped move.
 float getWinchTargetDepth();
 
 // Return the most recent home reference value.

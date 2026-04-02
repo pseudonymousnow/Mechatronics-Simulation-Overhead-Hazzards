@@ -24,6 +24,8 @@
 
 namespace {
 
+constexpr float kWinchMoveToPositionBandIn = 0.05f;
+
 #pragma region Private_Config_Storage
 
 /*
@@ -58,6 +60,7 @@ float winchFilteredSpeedInPerS = 0.0f;
 float winchPreviousPositionIn = 0.0f;
 float winchFilterPreviousPositionIn = 0.0f;
 float targetDepthIn = 0.0f;
+float targetPositionIn = 0.0f;
 
 float jogStartPositionIn = 0.0f;
 float homingStartPositionIn = 0.0f;
@@ -74,6 +77,7 @@ bool winchActionComplete = false;
 bool winchMotorFaultActive = false;
 bool winchEncoderReadSucceeded = false;
 bool winchSpeedFilterInitialized = false;
+bool targetPositionActive = false;
 
 int appliedMotorCommand = 0;
 
@@ -138,6 +142,11 @@ void writePawlServo(uint8_t servoPosition) {
   if (winchHardware.pawlServo != NULL) {
     winchHardware.pawlServo->write(servoPosition);
   }
+}
+
+void clearTargetPositionStop() {
+  targetPositionIn = winchPositionIn;
+  targetPositionActive = false;
 }
 
 bool readHomeSwitchPressedInternal() {
@@ -265,10 +274,14 @@ void updateWinchMeasurements() {
       alpha * (rawSpeedInPerS - winchFilteredSpeedInPerS);
 }
 
-void startConfiguredAction(WinchActionType action) {
+void startConfiguredAction(WinchActionType action,
+                          bool useTargetPosition = false,
+                          float requestedTargetPositionIn = 0.0f) {
   requestedAction = action;
   winchActionComplete = false;
   winchMotorFaultActive = false;
+  targetPositionIn = requestedTargetPositionIn;
+  targetPositionActive = useTargetPosition;
 
   actionTimestampMs = millis();
   jogStartPositionIn = winchPositionIn;
@@ -288,6 +301,7 @@ void startConfiguredAction(WinchActionType action) {
 }
 
 void completeActionImmediately() {
+  clearTargetPositionStop();
   currentStep = WINCH_STEP_IDLE;
   winchActionComplete = true;
 }
@@ -358,12 +372,23 @@ void runWinchStateMachine() {
 
     case WINCH_STEP_MOVING:
       if (requestedAction == WINCH_ACTION_LOWER) {
-        applyMotorCommand(winchMotionConfig.lowerSpeedCmd);
-        if (winchPositionIn <= targetDepthIn) {
+        if (targetPositionActive && winchPositionIn <= targetPositionIn) {
+          applyMotorCommand(0);
           currentStep = WINCH_STEP_BRAKE_AND_LOCK;
+        } else {
+          applyMotorCommand(winchMotionConfig.lowerSpeedCmd);
         }
       } else if (requestedAction == WINCH_ACTION_RAISE) {
-        applyMotorCommand(winchMotionConfig.raiseSpeedCmd);
+        if (readHomeSwitchPressedInternal()) {
+          applyMotorCommand(0);
+          completeActionImmediately();
+        } else if (targetPositionActive &&
+                   winchPositionIn >= targetPositionIn) {
+          applyMotorCommand(0);
+          currentStep = WINCH_STEP_BRAKE_AND_LOCK;
+        } else {
+          applyMotorCommand(winchMotionConfig.raiseSpeedCmd);
+        }
       } else if (requestedAction == WINCH_ACTION_MANUAL_LOWER) {
         writePawlServo(winchPawlConfig.openPosition);
         applyMotorCommand(winchMotionConfig.lowerSpeedCmd);
@@ -566,6 +591,7 @@ bool beginWinchControl(float initialZeroPositionIn) {
   requestedAction = WINCH_ACTION_LOWER;
   currentStep = WINCH_STEP_IDLE;
   targetDepthIn = winchMotionConfig.defaultLowerTargetIn;
+  targetPositionIn = initialZeroPositionIn;
   jogStartPositionIn = initialZeroPositionIn;
   homingStartPositionIn = initialZeroPositionIn;
   homeSwitchTripPositionIn = initialZeroPositionIn;
@@ -575,6 +601,7 @@ bool beginWinchControl(float initialZeroPositionIn) {
   winchActionComplete = false;
   winchMotorFaultActive = false;
   appliedMotorCommand = 0;
+  targetPositionActive = false;
 
   const bool resetSucceeded =
       resetWinchEncoderToCurrentPosition(initialZeroPositionIn);
@@ -616,6 +643,12 @@ bool resetWinchEncoderToCurrentPosition(float newZeroInches) {
   winchEncoderReadSucceeded = zeroSucceeded;
   winchHomePositionIn = newZeroInches;
   resetSpeedEstimatorState(newZeroInches);
+
+  if (targetPositionActive) {
+    applyMotorCommand(0);
+    completeActionImmediately();
+  }
+
   return zeroSucceeded;
 }
 
@@ -626,6 +659,8 @@ bool startWinchAction(WinchActionType action) {
 
   if (action == WINCH_ACTION_LOWER) {
     targetDepthIn = winchMotionConfig.defaultLowerTargetIn;
+    startConfiguredAction(action, true, targetDepthIn);
+    return true;
   }
 
   startConfiguredAction(action);
@@ -638,7 +673,30 @@ bool startWinchLowerToDepth(float requestedTargetDepthIn) {
   }
 
   targetDepthIn = requestedTargetDepthIn;
-  startConfiguredAction(WINCH_ACTION_LOWER);
+  startConfiguredAction(WINCH_ACTION_LOWER, true, requestedTargetDepthIn);
+  return true;
+}
+
+bool winchToPosition(float desiredPositionIn) {
+  if (!isWinchConfigured()) {
+    return false;
+  }
+
+  targetDepthIn = desiredPositionIn;
+
+  const float positionErrorIn = desiredPositionIn - winchPositionIn;
+  if (fabsf(positionErrorIn) <= kWinchMoveToPositionBandIn) {
+    applyMotorCommand(0);
+    resetRampToSpeedState();
+    completeActionImmediately();
+    return true;
+  }
+
+  if (positionErrorIn > 0.0f) {
+    startConfiguredAction(WINCH_ACTION_RAISE, true, desiredPositionIn);
+  } else {
+    startConfiguredAction(WINCH_ACTION_LOWER, true, desiredPositionIn);
+  }
   return true;
 }
 
@@ -650,6 +708,7 @@ void finishWinchAction(bool shouldLock) {
   applyMotorCommand(0);
   resetRampToSpeedState();
   winchActionComplete = false;
+  clearTargetPositionStop();
 
   if (shouldLock) {
     currentStep = WINCH_STEP_BRAKE_AND_LOCK;
@@ -692,7 +751,7 @@ float getWinchSpeedFiltered() {
 }
 
 float getWinchTargetDepth() {
-  return targetDepthIn;
+  return targetPositionActive ? targetPositionIn : targetDepthIn;
 }
 
 float getWinchHomePosition() {

@@ -62,7 +62,7 @@ const int WINCH_HOMING_SLOW_SPEED_CMD = 140;
 const int WINCH_MAX_MOTOR_COMMAND = 400;
 const int WINCH_JOG_UP_MIN_COMMAND = 80;
 const uint32_t PAWL_LOCK_DELAY_MS = 500;
-const uint32_t PAWL_UNLOCK_DELAY_MS = 300;
+const uint32_t PAWL_UNLOCK_DELAY_MS = 400;
 
 /*
   Jog-unlock tuning copied from the original winch_test.cpp.
@@ -193,6 +193,12 @@ void handleTestSerial() {
     startWinchAction(WINCH_ACTION_RAISE);
   } else if (command == 'd') {
     startWinchAction(WINCH_ACTION_MANUAL_LOWER);
+  } else if (command == 'p') {
+    const float desiredPositionIn = Serial.parseFloat();
+    const bool moveStarted = winchToPosition(desiredPositionIn);
+    Serial.print(moveStarted ? "Moving winch to position: " :
+                               "Failed to start move to position: ");
+    Serial.println(desiredPositionIn);
   } else if (command == 'x') {
     finishWinchAction(true);
   } else if (command == 'h') {
@@ -211,6 +217,7 @@ void printHelp() {
   Serial.println("  j = jog up, unlock, then lower to the configured target");
   Serial.println("  u = raise continuously");
   Serial.println("  d = manual lower continuously with pawl open");
+  Serial.println("  p<in> = move to a requested position in inches, example: p-4.5");
   Serial.println("  h = run the homing routine");
   Serial.println("  x = stop and lock");
   Serial.println("  z = zero encoder at the current position");
