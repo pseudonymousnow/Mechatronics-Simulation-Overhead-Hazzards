@@ -30,9 +30,9 @@ const int AS5600_NOISE_THRESH = 1;
 const int MAX_MOTOR_CMD = 400;
 const uint32_t CONTROL_INTERVAL_MS = 20;
 const uint32_t PRINT_INTERVAL_MS = 200;
-const float TARGET_TOLERANCE_IN = 0.15f;
+const float TARGET_TOLERANCE_IN = 0.5f;
 const float STOP_VELOCITY_TOLERANCE_IN_S = 0.20f;
-const uint32_t TARGET_SETTLE_TIME_MS = 500;
+const uint32_t TARGET_SETTLE_TIME_MS = 750;
 
 // The new trajectory helper uses one acceleration limit for both accel/decel.
 float steadyCruiseSpeedInPerS = 12.0f;
