@@ -93,14 +93,31 @@ const float WINCH_FILTER_TAU_S = 0.05f;
 */
 const float DEFAULT_TEST_LOWER_TARGET_IN = -10.0f;
 
+/*
+  Status printing is rate-limited so the serial monitor stays usable while the
+  winch is moving.
+*/
+const uint32_t STATUS_PRINT_INTERVAL_MS = 200;
+
 #pragma endregion
 
 #pragma region Function_Prototypes
 
 void configureWinchControl();
 void handleTestSerial();
-void printWinchStatus();
+void updateStatusStreaming(const WinchStatus &status);
+void printWinchStatus(const WinchStatus &status);
+void setManualStatusStreamEnabled(bool enabled);
 void printHelp();
+
+#pragma endregion
+
+#pragma region Test_Runtime_State
+
+bool manualStatusStreamEnabled = false;
+bool autoStatusStreamEnabled = false;
+bool previousWinchActionActive = false;
+uint32_t lastStatusPrintMs = 0;
 
 #pragma endregion
 
@@ -120,9 +137,11 @@ void setup() {
 }
 
 void loop() {
-  updateWinchControl();
-  printWinchStatus();
   handleTestSerial();
+  updateWinchControl();
+
+  const WinchStatus status = getWinchStatus();
+  updateStatusStreaming(status);
 }
 
 #pragma endregion
@@ -207,6 +226,8 @@ void handleTestSerial() {
     const bool resetOk = resetWinchEncoderToCurrentPosition(0.0f);
     Serial.println(resetOk ? "Winch encoder reset to zero." :
                              "Winch encoder reset failed.");
+  } else if (command == 's') {
+    setManualStatusStreamEnabled(!manualStatusStreamEnabled);
   } else if (command == '?') {
     printHelp();
   }
@@ -221,17 +242,55 @@ void printHelp() {
   Serial.println("  h = run the homing routine");
   Serial.println("  x = stop and lock");
   Serial.println("  z = zero encoder at the current position");
+  Serial.println("  s = toggle manual status streaming on or off");
   Serial.println("  ? = print this help again");
+  Serial.println("Status streaming also turns on while the winch is moving and off when it completes.");
 }
 
 #pragma endregion
 
 #pragma region Status_Printing
 
-void printWinchStatus() {
-  const WinchStatus status = getWinchStatus();
+void updateStatusStreaming(const WinchStatus &status) {
+  const uint32_t nowMs = millis();
 
-  Serial.print("Pos: ");
+  if (status.actionActive && !previousWinchActionActive) {
+    autoStatusStreamEnabled = true;
+    lastStatusPrintMs = 0;
+  }
+
+  const bool shouldStreamStatus =
+      manualStatusStreamEnabled || autoStatusStreamEnabled;
+
+  if (!status.actionActive && previousWinchActionActive) {
+    printWinchStatus(status);
+    autoStatusStreamEnabled = false;
+    lastStatusPrintMs = nowMs;
+  } else if (shouldStreamStatus &&
+             (lastStatusPrintMs == 0 ||
+              (nowMs - lastStatusPrintMs) >= STATUS_PRINT_INTERVAL_MS)) {
+    printWinchStatus(status);
+    lastStatusPrintMs = nowMs;
+  }
+
+  previousWinchActionActive = status.actionActive;
+}
+
+void setManualStatusStreamEnabled(bool enabled) {
+  manualStatusStreamEnabled = enabled;
+
+  Serial.print("Manual status stream ");
+  Serial.println(enabled ? "ON." : "OFF.");
+
+  if (manualStatusStreamEnabled || autoStatusStreamEnabled) {
+    lastStatusPrintMs = 0;
+  }
+}
+
+void printWinchStatus(const WinchStatus &status) {
+  Serial.print("Stream: ");
+  Serial.print((manualStatusStreamEnabled || autoStatusStreamEnabled) ? "ON" : "OFF");
+  Serial.print(" | Pos: ");
   Serial.print(status.positionIn);
   Serial.print(" | Speed: ");
   Serial.print(status.speedInPerS);
