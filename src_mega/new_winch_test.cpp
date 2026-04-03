@@ -32,8 +32,8 @@ const uint8_t WINCH_HOME_SWITCH_PIN = 3;
 /*
   Servo positions copied from the original winch_test.cpp.
 */
-const uint8_t PAWL_SERVO_LOCK_POS = 120;
-const uint8_t PAWL_SERVO_OPEN_POS = 180;
+const uint8_t PAWL_SERVO_LOCK_POS = 90;
+const uint8_t PAWL_SERVO_OPEN_POS = 0;
 
 /*
   I2C / encoder configuration copied from the original winch_test.cpp.
@@ -68,9 +68,9 @@ const uint32_t PAWL_UNLOCK_DELAY_MS = 400;
   Jog-unlock tuning copied from the original winch_test.cpp.
 */
 const float JOG_UP_TARGET_SPEED_IN_S = 0.15f;
-const float JOG_UP_RELIEF_DISTANCE_IN = 0.03f;
+const float JOG_UP_RELIEF_DISTANCE_IN = 0.0625f;
 const float JOG_UP_MAX_TRAVEL_IN = 0.50f;
-const uint32_t JOG_UP_RELIEF_DEBOUNCE_MS = 120;
+const uint32_t JOG_UP_RELIEF_DEBOUNCE_MS = 200;
 const float JOG_UP_CMD_RATE_PER_SEC = 350.0f;
 const float JOG_UP_KP_SPEED = 900.0f;
 
@@ -237,7 +237,7 @@ void printHelp() {
   Serial.println("Winch test commands:");
   Serial.println("  j = jog up, unlock, then lower to the configured target");
   Serial.println("  u = raise continuously");
-  Serial.println("  d = manual lower continuously with pawl open");
+  Serial.println("  d = jog up, unlock, then manual lower continuously");
   Serial.println("  p<in> = move to a requested position in inches, example: p-4.5");
   Serial.println("  h = run the homing routine");
   Serial.println("  x = stop and lock");

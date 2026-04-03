@@ -293,7 +293,9 @@ void startConfiguredAction(WinchActionType action,
 
   resetRampToSpeedState();
 
-  if (action == WINCH_ACTION_LOWER) {
+  if (action == WINCH_ACTION_LOWER ||
+      action == WINCH_ACTION_MANUAL_LOWER) {
+    // Both lowering modes should relieve pawl load before opening it.
     currentStep = WINCH_STEP_JOG_UP;
   } else {
     currentStep = WINCH_STEP_MOVING;
