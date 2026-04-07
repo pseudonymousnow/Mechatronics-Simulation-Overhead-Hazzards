@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <Servo.h>
 
-#include "DualG2HighPowerMotorShield.h"
+#include "DualG2HighPowerMotorShield.h" //M1nSLEEP changed to 5 from 2
 #include "WinchControl.h"
 
 /*

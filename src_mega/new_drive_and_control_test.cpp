@@ -7,7 +7,7 @@
 
 #include "DriveControl.h"
 #include "EncoderMux.h"
-#include "DualG2HighPowerMotorShield.h"
+#include "DualG2HighPowerMotorShield.h" //M1nSLEEP changed to 5 from 2
 
 // ===== Hardware configuration =====
 DualG2HighPowerMotorShield24v14 md;
