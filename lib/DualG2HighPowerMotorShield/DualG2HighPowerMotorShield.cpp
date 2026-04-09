@@ -7,7 +7,7 @@ boolean DualG2HighPowerMotorShield::_flipM2 = false;
 
 DualG2HighPowerMotorShield::DualG2HighPowerMotorShield()
 {
-  _M1nSLEEP = 5; //this has been changed
+  _M1nSLEEP = 2; 
   _M1nFAULT = 6;
   _M1DIR = 7;
   _M1PWM = 9;

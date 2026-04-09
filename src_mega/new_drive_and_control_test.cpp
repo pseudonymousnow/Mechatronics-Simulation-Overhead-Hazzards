@@ -10,7 +10,19 @@
 #include "DualG2HighPowerMotorShield.h" //M1nSLEEP changed to 5 from 2
 
 // ===== Hardware configuration =====
-DualG2HighPowerMotorShield24v14 md;
+unsigned char M1nSLEEP = 5;
+unsigned char M1DIR = 7;
+unsigned char M1PWM = 9;
+unsigned char M1nFAULT = 6;
+unsigned char M1CS = A0;
+unsigned char M2nSLEEP = 4;
+unsigned char M2DIR = 8;
+unsigned char M2PWM = 10;
+unsigned char M2nFAULT = 12;
+unsigned char M2CS = A1;
+
+DualG2HighPowerMotorShield md(M1nSLEEP, M1DIR, M1PWM, M1nFAULT, M1CS, M2nSLEEP, M2DIR, M2PWM, M2nFAULT, M2CS);
+//DualG2HighPowerMotorShield24v14 md;
 Encoder driveEncoder(19, 18);
 
 const bool FLIP_DRIVE_MOTOR = false;
@@ -20,7 +32,7 @@ const float DRIVE_ENCODER_COUNTS_PER_MOTOR_REV = 1200.0f;
 const float DRIVE_GEAR_RATIO = 0.5f;
 const float DRIVE_WHEEL_RADIUS_IN = 0.6f;
 
-const uint8_t REAL_POSITION_MUX_CH = 5;
+const uint8_t REAL_POSITION_MUX_CH = 0;
 const float REAL_POSITION_WHEEL_DIAMETER_IN = 0.875f;
 const int AS5600_COUNTS_PER_REV = 4096;
 const int AS5600_WRAP_THRESH = AS5600_COUNTS_PER_REV / 2;

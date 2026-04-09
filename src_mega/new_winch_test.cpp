@@ -16,8 +16,18 @@
 
 #pragma region Hardware_Objects
 
-DualG2HighPowerMotorShield24v14 md;
-Servo pawlServo;
+unsigned char M1nSLEEP = 5;
+unsigned char M1DIR = 7;
+unsigned char M1PWM = 9;
+unsigned char M1nFAULT = 6;
+unsigned char M1CS = A0;
+unsigned char M2nSLEEP = 4;
+unsigned char M2DIR = 8;
+unsigned char M2PWM = 10;
+unsigned char M2nFAULT = 12;
+unsigned char M2CS = A1;
+
+DualG2HighPowerMotorShield md(M1nSLEEP, M1DIR, M1PWM, M1nFAULT, M1CS, M2nSLEEP, M2DIR, M2PWM, M2nFAULT, M2CS);Servo pawlServo;
 
 #pragma endregion
 
@@ -41,7 +51,7 @@ const uint8_t PAWL_SERVO_OPEN_POS = 0;
 const uint8_t I2C_MUX_ADDR = 0x70;
 const uint8_t AS5600_ADDR = 0x36;
 const uint8_t AS5600_RAW_ANGLE_REG = 0x0C;
-const uint8_t WINCH_ENCODER_MUX_CH = 7;
+const uint8_t WINCH_ENCODER_MUX_CH = 1;
 const bool FLIP_WINCH_ENCODER_SIGN = true;
 const int WINCH_ENCODER_COUNTS_PER_REV = 4096;
 const int WINCH_WRAP_THRESHOLD = WINCH_ENCODER_COUNTS_PER_REV / 2;
