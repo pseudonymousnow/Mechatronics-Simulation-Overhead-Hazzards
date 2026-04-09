@@ -3,54 +3,57 @@
 /*
   RobotProtocol.h
 
-  Put the shared communication language for manager <-> node here.
+  Shared packet helpers for the design day controller/robot demo.
 
-  This file should eventually include:
-  - Packet type constants for run, go, estop, ready, ack, finish, battery, and winch commands
-  - Shared structs used by both manager and node, such as run command data and finish report data
-  - Function declarations for parsing incoming payload strings
-  - Function declarations for formatting outgoing payload strings
-  - Shared CSV / tokenization helper declarations if you want one common implementation
+  The XBee transport uses framed packets:
+    <CMD,...>
+    <STS,...>
 
-  This file should NOT include:
-  - XBee polling loops
-  - Manager state machine logic
-  - Node state machine logic
-  - Direct hardware control
+  This library keeps the payload format, parsing, and formatting in one place
+  so both sketches stay focused on hardware behavior.
 */
-
-#pragma region Includes
 
 #include <Arduino.h>
 
-#pragma endregion
+static const size_t ROBOT_PROTOCOL_MAX_PAYLOAD_LENGTH = 96;
 
-#pragma region Constants
+enum DemoWinchCommand : uint8_t {
+  DEMO_WINCH_COMMAND_NONE = 0,
+  DEMO_WINCH_COMMAND_UP = 1,
+  DEMO_WINCH_COMMAND_DOWN = 2
+};
 
-// Shared protocol constants and packet identifiers go here.
+struct DemoCommandPacket {
+  int16_t driveCommand;
+  DemoWinchCommand winchCommand;
+  bool emergencyStop;
+  uint32_t sequence;
+};
 
-#pragma endregion
+struct DemoStatusPacket {
+  int16_t appliedDriveCommand;
+  DemoWinchCommand activeWinchCommand;
+  bool homeSwitchPressed;
+  bool emergencyStopActive;
+  bool communicationTimedOut;
+  bool winchBusy;
+  uint32_t lastCommandSequence;
+};
 
-#pragma region Shared_Structs
+bool isRobotProtocolWhitespace(char value);
+void sanitizeRobotProtocolPayloadInPlace(char *text);
+uint8_t splitRobotProtocolCsvInPlace(char *text,
+                                     char *tokens[],
+                                     uint8_t maxTokenCount);
 
-// Shared packet, run command, and finish report structs go here.
+bool formatDemoCommandPayload(const DemoCommandPacket &packet,
+                              char *buffer,
+                              size_t bufferSize);
+bool parseDemoCommandPayload(char *payload, DemoCommandPacket &packet);
 
-#pragma endregion
+bool formatDemoStatusPayload(const DemoStatusPacket &packet,
+                             char *buffer,
+                             size_t bufferSize);
+bool parseDemoStatusPayload(char *payload, DemoStatusPacket &packet);
 
-#pragma region Parse_Function_Declarations
-
-// Shared parsing function declarations go here.
-
-#pragma endregion
-
-#pragma region Format_Function_Declarations
-
-// Shared payload formatting function declarations go here.
-
-#pragma endregion
-
-#pragma region Utility_Function_Declarations
-
-// Shared sanitize / CSV helper declarations go here if you want one copy for both boards.
-
-#pragma endregion
+const char *getDemoWinchCommandName(DemoWinchCommand command);

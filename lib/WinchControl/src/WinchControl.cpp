@@ -477,7 +477,7 @@ void runWinchStateMachine() {
 
 #pragma region Configuration_Functions
 
-void setWinchHardwareBindings(DualG2HighPowerMotorShield24v14 *motorShield,
+void setWinchHardwareBindings(DualG2HighPowerMotorShield *motorShield,
                               Servo *pawlServo) {
   winchHardware.motorShield = motorShield;
   winchHardware.pawlServo = pawlServo;

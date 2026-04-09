@@ -27,7 +27,9 @@ unsigned char M2PWM = 10;
 unsigned char M2nFAULT = 12;
 unsigned char M2CS = A1;
 
-DualG2HighPowerMotorShield md(M1nSLEEP, M1DIR, M1PWM, M1nFAULT, M1CS, M2nSLEEP, M2DIR, M2PWM, M2nFAULT, M2CS);Servo pawlServo;
+DualG2HighPowerMotorShield md(M1nSLEEP, M1DIR, M1PWM, M1nFAULT, M1CS, M2nSLEEP, M2DIR, M2PWM, M2nFAULT, M2CS);
+Servo pawlServo;
+
 
 #pragma endregion
 
@@ -135,6 +137,8 @@ uint32_t lastStatusPrintMs = 0;
 
 void setup() {
   Serial.begin(115200);
+
+  pawlServo.write(90); //this line is vital to make sure that the winch starts homed to a locked pawl position. INclude in the final code
 
   configureWinchControl();
   const bool beginSucceeded = beginWinchControl(0.0f);

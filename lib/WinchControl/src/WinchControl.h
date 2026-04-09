@@ -34,7 +34,7 @@
   drivers are usually constructed as globals in the top-level sketch.
 */
 struct WinchHardwareBindings {
-  DualG2HighPowerMotorShield24v14 *motorShield;
+  DualG2HighPowerMotorShield *motorShield;
   Servo *pawlServo;
 };
 
@@ -194,7 +194,7 @@ struct WinchStatus {
 /*
   Supply the hardware objects that the library should operate on.
 */
-void setWinchHardwareBindings(DualG2HighPowerMotorShield24v14 *motorShield,
+void setWinchHardwareBindings(DualG2HighPowerMotorShield *motorShield,
                               Servo *pawlServo);
 
 /*
