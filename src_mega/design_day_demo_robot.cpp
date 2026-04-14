@@ -89,7 +89,7 @@ const int WINCH_NOISE_THRESHOLD = 4;
 const float WINCH_DRUM_RADIUS_IN = (1.502f / 2.0f) + (1.0f / 32.0f);
 
 const bool FLIP_WINCH_MOTOR_DIRECTION = true;
-const int WINCH_RAISE_SPEED_CMD = 400;
+const int WINCH_RAISE_SPEED_CMD = 200;
 const int WINCH_LOWER_SPEED_CMD = -200;
 const int WINCH_HOMING_SLOW_SPEED_CMD = 140;
 const int WINCH_MAX_MOTOR_COMMAND = 400;
@@ -168,6 +168,8 @@ void setup() {
   md.enableDrivers();
   md.flipM1(FLIP_DRIVE_MOTOR);
   stopDriveMotor();
+
+  pawlServo.write(90); // this to make sure it starts lockedx
 
   configureWinchControl();
   const bool beginSucceeded = beginWinchControl(0.0f);
