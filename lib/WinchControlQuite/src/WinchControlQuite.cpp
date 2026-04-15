@@ -1,4 +1,4 @@
-#include <WinchControl.h>
+#include <WinchControlQuite.h>
 
 /*
   WinchControl.cpp
@@ -25,7 +25,6 @@
 namespace {
 
 constexpr float kWinchMoveToPositionBandIn = 0.05f;
-constexpr uint32_t kWireTimeoutUs = 25000;
 
 #pragma region Private_Config_Storage
 
@@ -391,6 +390,7 @@ void runWinchStateMachine() {
           currentStep = WINCH_STEP_BRAKE_AND_LOCK;
         } else {
           applyMotorCommand(winchMotionConfig.raiseSpeedCmd);
+          writePawlServo(winchPawlConfig.openPosition);
         }
       } else if (requestedAction == WINCH_ACTION_MANUAL_LOWER) {
         writePawlServo(winchPawlConfig.openPosition);
@@ -582,7 +582,6 @@ bool beginWinchControl(float initialZeroPositionIn) {
   }
 
   Wire.begin();
-  Wire.setWireTimeout(kWireTimeoutUs, true);
 
   winchHardware.motorShield->init();
   winchHardware.motorShield->enableDrivers();

@@ -59,6 +59,7 @@ const uint32_t XBEE_BAUD_RATE = 9600;
 const uint32_t COMMAND_TIMEOUT_MS = 500;
 const uint32_t STATUS_SEND_INTERVAL_MS = 200;
 const uint32_t LOCAL_STATUS_PRINT_INTERVAL_MS = 500;
+const uint32_t USB_SERIAL_STARTUP_DELAY_MS = 500;
 
 #pragma endregion
 
@@ -148,6 +149,8 @@ void handleXbeeCharacter(char incoming, uint32_t nowMs);
 void handleXbeePayload(char *payload, uint32_t nowMs);
 void sendFramedXbeePayload(const char *payload);
 void sendStatusPacket();
+void handleUsbDebugInput();
+void printUsbDebugHelp();
 
 void updateCommandTimeout(uint32_t nowMs);
 void applyDriveMotorCommand(int motorCommand);
@@ -162,8 +165,15 @@ void printStatusLine();
 
 void setup() {
   Serial.begin(USB_SERIAL_BAUD_RATE);
+  delay(USB_SERIAL_STARTUP_DELAY_MS);
+  Serial.println("design_day_demo_robot booting");
+  Serial.println("USB serial monitor is debug/status only. Robot commands come from Serial2 XBee.");
+  Serial.flush();
+
   xbeeSerial.begin(XBEE_BAUD_RATE);
 
+  Serial.println("Initializing drive motor shield...");
+  Serial.flush();
   md.init();
   md.enableDrivers();
   md.flipM1(FLIP_DRIVE_MOTOR);
@@ -171,6 +181,8 @@ void setup() {
 
   pawlServo.write(90); // this to make sure it starts lockedx
 
+  Serial.println("Initializing WinchControl...");
+  Serial.flush();
   configureWinchControl();
   const bool beginSucceeded = beginWinchControl(0.0f);
 
@@ -187,6 +199,7 @@ void setup() {
 void loop() {
   const uint32_t nowMs = millis();
 
+  handleUsbDebugInput();
   handleXbeeInput(nowMs);
   updateCommandTimeout(nowMs);
   serviceDriveAndWinchCommands();
@@ -323,6 +336,35 @@ void sendStatusPacket() {
   }
 
   sendFramedXbeePayload(payload);
+}
+
+void handleUsbDebugInput() {
+  while (Serial.available() > 0) {
+    const char command = (char)Serial.read();
+
+    switch (command) {
+      case '?':
+        printUsbDebugHelp();
+        break;
+      case 'p':
+      case 'P':
+        printStatusLine();
+        break;
+      case '\r':
+      case '\n':
+        break;
+      default:
+        Serial.println("Unknown USB debug command. Type ? for help.");
+        break;
+    }
+  }
+}
+
+void printUsbDebugHelp() {
+  Serial.println("USB debug commands:");
+  Serial.println("  p = print one robot status line");
+  Serial.println("  ? = print this help");
+  Serial.println("Robot motion commands are received from Serial2 XBee, not USB Serial.");
 }
 
 void updateCommandTimeout(uint32_t nowMs) {
