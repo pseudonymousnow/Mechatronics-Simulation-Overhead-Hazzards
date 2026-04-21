@@ -3,7 +3,7 @@
 
 #include "DualG2HighPowerMotorShield.h"
 #include "RobotProtocol.h"
-#include "WinchControl.h"
+#include "WinchControlQuite.h"
 
 /*
   design_day_demo_robot.cpp
@@ -79,10 +79,9 @@ const uint8_t WINCH_HOME_SWITCH_PIN = 3;
 const uint8_t PAWL_SERVO_LOCK_POS = 90;
 const uint8_t PAWL_SERVO_OPEN_POS = 0;
 
-const uint8_t I2C_MUX_ADDR = 0x70;
 const uint8_t AS5600_ADDR = 0x36;
 const uint8_t AS5600_RAW_ANGLE_REG = 0x0C;
-const uint8_t WINCH_ENCODER_MUX_CH = 1;
+const uint8_t WINCH_ENCODER_DIRECT_I2C_COMPAT_CH = 0;
 const bool FLIP_WINCH_ENCODER_SIGN = true;
 const int WINCH_ENCODER_COUNTS_PER_REV = 4096;
 const int WINCH_WRAP_THRESHOLD = WINCH_ENCODER_COUNTS_PER_REV / 2;
@@ -130,6 +129,8 @@ bool commandEverReceived = false;
 bool communicationTimedOut = true;
 bool remoteEmergencyStopActive = false;
 bool driveContactSwitchEmergencyStopActive = false;
+bool driveContactSwitchWasPulledDown = false;
+bool localEmergencyStopLatched = false;
 bool emergencyStopActive = false;
 bool safetyStopIssued = false;
 
@@ -157,6 +158,8 @@ void printUsbDebugHelp();
 
 void updateCommandTimeout(uint32_t nowMs);
 bool isDriveContactSwitchPulledDown();
+void latchLocalEmergencyStop(const char *message);
+void clearLocalEmergencyStop();
 void updateEmergencyStopState();
 void applyDriveMotorCommand(int motorCommand);
 void stopDriveMotor();
@@ -172,10 +175,15 @@ void setup() {
   Serial.begin(USB_SERIAL_BAUD_RATE);
   delay(USB_SERIAL_STARTUP_DELAY_MS);
   Serial.println("design_day_demo_robot booting");
-  Serial.println("USB serial monitor is debug/status only. Robot commands come from Serial2 XBee.");
+  Serial.println("BUILD: design_day_demo_robot_copy D2 latched e-stop");
+  Serial.println("USB serial monitor handles local e-stop/debug. Robot motion commands come from Serial2 XBee.");
   Serial.flush();
 
   pinMode(DRIVE_CONTACT_SWITCH_PIN, INPUT_PULLUP);
+  driveContactSwitchWasPulledDown = isDriveContactSwitchPulledDown();
+  if (driveContactSwitchWasPulledDown) {
+    latchLocalEmergencyStop("Drive contact switch already pulled down. Local emergency stop latched.");
+  }
 
   xbeeSerial.begin(XBEE_BAUD_RATE);
 
@@ -197,10 +205,11 @@ void setup() {
   Serial.println("Drive motor: M1");
   Serial.println("Drive contact switch: D2 INPUT_PULLUP, LOW triggers emergency stop");
   Serial.println("Winch motor: M2 via WinchControl");
+  Serial.println("Winch encoder: direct AS5600 on SDA/SCL");
   Serial.println("Wireless commands: Serial2 XBee framed packets");
 
   if (!beginSucceeded) {
-    Serial.println("WinchControl begin failed. Check encoder and home-switch wiring.");
+    Serial.println("WinchControl begin failed. Check AS5600 SDA/SCL wiring/address and home-switch wiring.");
   }
 }
 
@@ -238,13 +247,20 @@ void configureWinchControl() {
                          PAWL_LOCK_DELAY_MS,
                          PAWL_UNLOCK_DELAY_MS);
 
-  setWinchEncoderParameters(WINCH_ENCODER_MUX_CH,
+  /*
+    This copy uses the AS5600 directly on the Mega SDA/SCL bus instead of
+    through the TCA9548A mux. WinchControl still takes a mux-style config, so
+    the mux address is intentionally pointed at the AS5600 itself. The dummy
+    channel write only selects AS5600 register 0x01, then the real raw-angle
+    read below immediately selects AS5600_RAW_ANGLE_REG.
+  */
+  setWinchEncoderParameters(WINCH_ENCODER_DIRECT_I2C_COMPAT_CH,
                             WINCH_DRUM_RADIUS_IN,
                             FLIP_WINCH_ENCODER_SIGN,
                             WINCH_ENCODER_COUNTS_PER_REV,
                             WINCH_WRAP_THRESHOLD,
                             WINCH_NOISE_THRESHOLD,
-                            I2C_MUX_ADDR,
+                            AS5600_ADDR,
                             AS5600_ADDR,
                             AS5600_RAW_ANGLE_REG);
 
@@ -350,15 +366,20 @@ void sendStatusPacket() {
 
 void handleUsbDebugInput() {
   while (Serial.available() > 0) {
-    const char command = (char)Serial.read();
+    const char command = (char)tolower(Serial.read());
 
     switch (command) {
       case '?':
         printUsbDebugHelp();
         break;
       case 'p':
-      case 'P':
         printStatusLine();
+        break;
+      case 'x':
+        latchLocalEmergencyStop("Local emergency stop latched. Send 'c' to clear.");
+        break;
+      case 'c':
+        clearLocalEmergencyStop();
         break;
       case '\r':
       case '\n':
@@ -372,9 +393,11 @@ void handleUsbDebugInput() {
 
 void printUsbDebugHelp() {
   Serial.println("USB debug commands:");
+  Serial.println("  x = latch local emergency stop");
+  Serial.println("  c = clear local emergency stop latch");
   Serial.println("  p = print one robot status line");
   Serial.println("  ? = print this help");
-  Serial.println("Robot motion commands are received from Serial2 XBee, not USB Serial.");
+  Serial.println("Robot motion commands are still received from Serial2 XBee.");
 }
 
 void updateCommandTimeout(uint32_t nowMs) {
@@ -391,10 +414,37 @@ bool isDriveContactSwitchPulledDown() {
   return digitalRead(DRIVE_CONTACT_SWITCH_PIN) == LOW;
 }
 
+void latchLocalEmergencyStop(const char *message) {
+  if (!localEmergencyStopLatched && message != NULL && message[0] != '\0') {
+    Serial.println(message);
+  }
+
+  localEmergencyStopLatched = true;
+  emergencyStopActive = remoteEmergencyStopActive || localEmergencyStopLatched;
+}
+
+void clearLocalEmergencyStop() {
+  localEmergencyStopLatched = false;
+  emergencyStopActive = remoteEmergencyStopActive || localEmergencyStopLatched;
+
+  Serial.println(emergencyStopActive
+                     ? "Local emergency stop cleared, but another stop source is still active."
+                     : "Local emergency stop cleared.");
+}
+
 void updateEmergencyStopState() {
-  driveContactSwitchEmergencyStopActive = isDriveContactSwitchPulledDown();
+  const bool driveContactSwitchPulledDown = isDriveContactSwitchPulledDown();
+  driveContactSwitchEmergencyStopActive = driveContactSwitchPulledDown;
+
+  if (driveContactSwitchPulledDown && !driveContactSwitchWasPulledDown) {
+    driveContactSwitchWasPulledDown = true;
+    latchLocalEmergencyStop("Drive contact switch triggered. Local emergency stop latched. Send 'c' to clear.");
+  } else {
+    driveContactSwitchWasPulledDown = driveContactSwitchPulledDown;
+  }
+
   emergencyStopActive =
-      remoteEmergencyStopActive || driveContactSwitchEmergencyStopActive;
+      remoteEmergencyStopActive || localEmergencyStopLatched;
 }
 
 void applyDriveMotorCommand(int motorCommand) {
@@ -501,6 +551,8 @@ void printStatusLine() {
   Serial.print(emergencyStopActive ? "ON" : "OFF");
   Serial.print(" remote_estop=");
   Serial.print(remoteEmergencyStopActive ? "ON" : "OFF");
+  Serial.print(" local_estop_latch=");
+  Serial.print(localEmergencyStopLatched ? "ON" : "OFF");
   Serial.print(" drive_contact=");
   Serial.print(driveContactSwitchEmergencyStopActive ? "PULLED_DOWN" : "OPEN");
   Serial.print(" timeout=");
@@ -509,6 +561,8 @@ void printStatusLine() {
   Serial.print(getWinchStepName(winchStatus.currentStep));
   Serial.print(" winch_pos=");
   Serial.print(winchStatus.positionIn, 3);
+  Serial.print(" winch_encoder=");
+  Serial.print(winchStatus.encoderReadSucceeded ? "OK" : "FAIL");
   Serial.print(" home=");
   Serial.print(winchStatus.homeSwitchPressed ? "PRESSED" : "OPEN");
   Serial.println();
