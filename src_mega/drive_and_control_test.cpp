@@ -11,7 +11,7 @@ Encoder driveEncoder(19, 18);
 const uint8_t I2C_MUX_ADDR = 0x70;
 const uint8_t AS5600_ADDR = 0x36;
 const uint8_t AS5600_RAW_ANGLE_REG = 0x0C;
-const uint8_t REAL_POSITION_MUX_CH = 5;
+const uint8_t REAL_POSITION_MUX_CH = 0;
 
 const bool FLIP_DRIVE_MOTOR = false;
 

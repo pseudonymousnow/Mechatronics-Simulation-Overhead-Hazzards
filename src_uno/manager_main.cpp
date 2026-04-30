@@ -54,7 +54,7 @@
   #include <string.h>
   #include <stdlib.h>
 
-/* ========================= Pin Definitions ========================= */
+/* ========================= Serial Definitions ========================= */
   const uint8_t XBEE_RX = 2; // XBee TX -> Arduino D2
   const uint8_t XBEE_TX = 3; // Arduino D3 -> XBee RX
   SoftwareSerial xbeeSerial(XBEE_RX, XBEE_TX);
