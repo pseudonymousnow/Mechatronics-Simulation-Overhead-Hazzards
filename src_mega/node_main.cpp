@@ -7,7 +7,7 @@
  *
  * Hardware:
  *  - Arduino Mega
- *  - XBee on Serial2 (pins RX2=17, TX2=16 on Mega) !CHECK!
+ *  - XBee on Serial2 (pins RX2=17, TX2=16 on Mega) 
  *
  * Critical Requirement:
  *  - Change NODE_ID in ONE place to convert node1 <-> node2.
@@ -24,14 +24,20 @@
 #pragma region Includes/Variable_Declarations/Definitions
 /* ========================= Includes ========================= */
   #include <Arduino.h>
+  #include <Encoder.h>
+  #include <Wire.h>
+  #include <math.h>
   #include <string.h>
   #include <stdlib.h>
+  #include <DriveControl.h>
+  #include <EncoderMux.h>
+  #include <DualG2HighPowerMotorShield.h>
 
 /* ========================= Node Identity ========================= */
   #define NODE_ID 1               // <-- CHANGE TO 2 to make this node behave as Node2
 
 /* ========================= Serial Definitions ========================= */
-  #define xbeeSerial Serial2      // Mega: Serial2 (TX2=16, RX2=17)  !CHECK! wiring
+  #define xbeeSerial Serial2      // Mega: Serial2 (TX2=16, RX2=17)  
 
 /* ========================= Protocol ========================= */
   const char START_CMD = 'G';     // <G>
@@ -74,7 +80,7 @@
     EMERGENCY_STOP
   };
 
-  NodeState currentState = TEST_MODE; // <-- set to TEST_MODE for comm simulation testing. WAIT_FOR_COMMAND for normal opperation
+  NodeState currentState = WAIT_FOR_COMMAND; // <-- set to TEST_MODE for comm simulation testing. WAIT_FOR_COMMAND for normal opperation
 
 /* ========================= Run Parameters ========================= */
   struct RunParams {
@@ -91,7 +97,7 @@
     float lowerLoadDepthCmd = 0.0f;   // how far load goes down during stop
 
     bool lowerAndHoist = false;       // whether to do the mid-rail lower/hoist
-    uint8_t startSide = 0;            // 0 or 1
+    uint8_t startSide = 0;            // desired finish side for this run / start side for the next run
   };
 
   RunParams run;
@@ -112,8 +118,9 @@
 
 /* ========================= Drive / Side / Flags ========================= */
   enum Side : uint8_t { SIDE_0 = 0, SIDE_1 = 1 };
-  Side startSide = SIDE_0;
-  Side currentSide = SIDE_0;
+  Side startSide = SIDE_0;          // desired finish side for this run / start side for the next run
+  Side currentSide = SIDE_0;        // actual tracked side of the robot
+  Side runPhysicalStartSide = SIDE_0; // actual side the robot was on when the current run began
 
   bool slowdown = false;
   bool goReceived = false;
@@ -142,9 +149,102 @@
   float measuredWinchMaxDepth = 0.0f;
 
 /* ========================= Pin Placeholders ========================= */
-  const uint8_t PIN_BATT_SENSE = A0;    // !CHECK! battery divider input pin
-  const uint8_t PIN_LIMIT_SIDE0 = 0;    // !CHECK! contact switch for SIDE_0 end
-  const uint8_t PIN_LIMIT_SIDE1 = 0;    // !CHECK! contact switch for SIDE_1 end
+  const uint8_t PIN_BATT_SENSE = A2;            // !CHECK! battery divider input pin, change to MUX
+  const uint8_t PIN_DRIVE_CONTACT_SWITCH = 3;   // shared rail-end contact switch for both sides
+
+/* ========================= Drive Hardware ========================= */
+  unsigned char M1nSLEEP = 5;
+  unsigned char M1DIR = 7;
+  unsigned char M1PWM = 9;
+  unsigned char M1nFAULT = 6;
+  unsigned char M1CS = A0;
+  unsigned char M2nSLEEP = 4;
+  unsigned char M2DIR = 8;
+  unsigned char M2PWM = 10;
+  unsigned char M2nFAULT = 12;
+  unsigned char M2CS = A1;
+
+  DualG2HighPowerMotorShield md(M1nSLEEP,
+                                M1DIR,
+                                M1PWM,
+                                M1nFAULT,
+                                M1CS,
+                                M2nSLEEP,
+                                M2DIR,
+                                M2PWM,
+                                M2nFAULT,
+                                M2CS);
+  Encoder driveEncoder(19, 18);
+
+/* ========================= Drive Configuration ========================= */
+  const bool FLIP_DRIVE_MOTOR = false;
+
+  const float SIDE_0_POSITION_FT = 0.0f;  // !CHECK! test-rail coordinate for side 0
+  const float SIDE_1_POSITION_FT = 4.0f;  // !CHECK! test-rail coordinate for side 1
+
+  const float DRIVE_ENCODER_COUNTS_PER_MOTOR_REV = 1200.0f;
+  const float DRIVE_GEAR_RATIO = 0.5f;
+  const float DRIVE_WHEEL_RADIUS_IN = 0.6f;
+
+  const uint8_t DRIVE_REAL_POSITION_MUX_CH = 0;
+  const float REAL_POSITION_WHEEL_DIAMETER_IN = 0.875f;
+  const int AS5600_COUNTS_PER_REV = 4096;
+  const int AS5600_WRAP_THRESH = AS5600_COUNTS_PER_REV / 2;
+  const int AS5600_NOISE_THRESH = 1;
+
+  const int MAX_DRIVE_MOTOR_CMD = 400;
+  const uint32_t DRIVE_CONTROL_INTERVAL_MS = 20;
+  const uint32_t DRIVE_CONTACT_SWITCH_ARM_DELAY_MS = 800; // !CHECK! ignore shared endstop briefly after drive start
+  const float DRIVE_RETURN_END_BUFFER_IN = 0.60f;         // !CHECK! extend post-middle-stop return trajectory slightly to absorb slip
+  const float DRIVE_TARGET_TOLERANCE_IN = 0.5f;
+  const float DRIVE_STOP_VELOCITY_TOLERANCE_IN_S = 0.20f;
+  const uint32_t DRIVE_TARGET_SETTLE_TIME_MS = 750;
+  const float DRIVE_TRAJECTORY_MAX_ACCEL_IN_PER_S2 = 9.0f; //!CHECK!
+  const float DRIVE_RAMP_KP = 170.0f; //!CHECK!
+  const float DRIVE_RAMP_KI = 15.0f; //!CHECK!
+  const float DRIVE_RAMP_KD = 20.0f;
+  const float DRIVE_RAMP_INTEGRAL_WINDOW_IN = 4.0f;
+  const float DRIVE_REAL_POSITION_FIR_COEFFS[] = {1.0f};
+  const float DRIVE_CENTER_SAMPLE_HALF_WINDOW_IN = 6.0f; // !CHECK! center-speed averaging window
+  const float DRIVE_SLOWDOWN_WINDOW_IN = 12.0f;          // !CHECK! informational slowdown window
+
+/* ========================= Drive Runtime ========================= */
+  enum DriveMode : uint8_t {
+    DRIVE_MODE_IDLE = 0,
+    DRIVE_MODE_TRAJECTORY
+  };
+
+  struct DriveSnapshot {
+    long driveCounts = 0;
+    long realCounts = 0;
+    float drivePosIn = 0.0f;
+    float realPosRawIn = 0.0f;
+    float realPosFirIn = 0.0f;
+    float driveVelInPerS = 0.0f;
+    float realVelInPerS = 0.0f;
+  };
+
+  DriveSnapshot driveSnapshot;
+  DriveSnapshot previousDriveSnapshot;
+
+  DriveMode driveMode = DRIVE_MODE_IDLE;
+  TrajectoryProfile activeDriveTrajectory = {};
+  Side driveTargetSide = SIDE_0;
+
+  int appliedDriveMotorCmd = 0;
+  float steadyCruiseSpeedInPerS = 12.0f;
+  float activeDesiredDrivePositionIn = 0.0f;
+  float driveTargetPositionIn = 0.0f;
+
+  uint32_t driveTrajectoryStartMs = 0;
+  uint32_t driveLastControlMs = 0;
+  uint32_t driveTargetSettledSinceMs = 0;
+  uint32_t driveContactSwitchArmAtMs = 0;
+
+  float centerSpeedSumInPerS = 0.0f;
+  uint32_t centerSpeedSampleCount = 0;
+
+  bool driveContactSwitchWasPressed = false;
 
 #pragma endregion
 
@@ -167,6 +267,8 @@
     bool isWs(char c);
     void sanitizeInPlace(char *s);
     uint8_t splitCsv(char *line, char *tokens[], uint8_t maxTokens);
+    float feetToInches(float feet);
+    float inchesToFeet(float inches);
 
     bool parseRunCommandPacket(const char *payloadIn);
     bool parseLowerWinchPacket(const char *payloadIn, float &depthOut);
@@ -190,6 +292,8 @@
   /* ---- Drive (stubs you will implement) ---- */
     void driveStartTowardOppositeSide();  // non-blocking start
     void driveStartTowardSide(Side s);    // non-blocking start
+    void driveStartTowardSideWithEndBuffer(Side s, float extraEndBufferIn);
+    void driveStartTowardRailPositionFeet(float targetFeet, Side targetSideAtEndstop);
     void driveUpdate();                  // non-blocking update loop
     void stopDriveMotors();              // stub
 
@@ -197,6 +301,26 @@
     bool reachedSlowdownPosition();      // stub
     bool contactSwitchHit();             // stub + side logic
     void resetDriveEncoders();           // stub
+
+  /* ---- Drive helpers ---- */
+    void configureDriveControl();
+    void applyDriveRampSettings();
+    void armDriveContactSwitchDelay();
+    bool zeroDriveSensorsToAbsolutePosition(float newZeroPositionIn);
+    void refreshDriveSensors(float dtSeconds);
+    void applyDriveMotorCommand(int speedCmd);
+    bool startDriveTrajectoryToPositionIn(float targetPositionIn, Side targetSideIn);
+    float getDriveEncoderDistanceIn();
+    float getSidePositionFeet(Side side);
+    float getSidePositionInches(Side side);
+    float getRailCenterPositionInches();
+    float applyDriveEndBufferInches(float baseTargetIn, float extraEndBufferIn);
+    bool hasDriveSettledAtTarget();
+    bool hasReachedRailPositionFeet(float targetFeet);
+    bool isDriveContactSwitchPressed();
+    void updateCenterSpeedMeasurement();
+    Side getOppositeSide(Side side);
+    Side getDriveResetReferenceSide();
 
   /* ---- Run Logic helpers ---- */
     bool destinationIsStartSide();       // stub decision function
@@ -213,6 +337,8 @@
   #pragma region Wireless_Communication_Functions
 /* ========================= Utility ========================= */
   bool isWs(char c) { return (c == ' ' || c == '\t' || c == '\r' || c == '\n'); }
+  float feetToInches(float feet) { return feet * 12.0f; }
+  float inchesToFeet(float inches) { return inches / 12.0f; }
 
   void sanitizeInPlace(char *s) {
     // remove '<','>','\r','\n' and trim whitespace
@@ -654,51 +780,316 @@
 
   #pragma region Drive_Functions
 
-/* ========================= Drive Stubs ========================= */
+/* ========================= Drive Control ========================= */
+  Side getOppositeSide(Side side) {
+    return (side == SIDE_0) ? SIDE_1 : SIDE_0;
+  }
+
+  float getSidePositionFeet(Side side) {
+    return (side == SIDE_0) ? SIDE_0_POSITION_FT : SIDE_1_POSITION_FT;
+  }
+
+  float getSidePositionInches(Side side) {
+    return feetToInches(getSidePositionFeet(side));
+  }
+
+  float getRailCenterPositionInches() {
+    return 0.5f * (getSidePositionInches(SIDE_0) + getSidePositionInches(SIDE_1));
+  }
+
+  float applyDriveEndBufferInches(float baseTargetIn, float extraEndBufferIn) {
+    if (extraEndBufferIn <= 0.0f) {
+      return baseTargetIn;
+    }
+    return (baseTargetIn >= driveSnapshot.realPosFirIn)
+               ? (baseTargetIn + extraEndBufferIn)
+               : (baseTargetIn - extraEndBufferIn);
+  }
+
+  bool isDriveContactSwitchPressed() {
+    return digitalRead(PIN_DRIVE_CONTACT_SWITCH) == LOW;
+  }
+
+  void applyDriveRampSettings() {
+    setRampControlGains(DRIVE_RAMP_KP, DRIVE_RAMP_KI, DRIVE_RAMP_KD);
+    setRampIntegralWindow(DRIVE_RAMP_INTEGRAL_WINDOW_IN);
+  }
+
+  void armDriveContactSwitchDelay() {
+    driveContactSwitchArmAtMs = millis() + DRIVE_CONTACT_SWITCH_ARM_DELAY_MS;
+  }
+
+  void configureDriveControl() {
+    EncoderMuxConfig realPositionConfig = makeDefaultAs5600MuxConfig(DRIVE_REAL_POSITION_MUX_CH);
+    realPositionConfig.countsPerRevolution = AS5600_COUNTS_PER_REV;
+    realPositionConfig.wrapThreshold = AS5600_WRAP_THRESH;
+    realPositionConfig.noiseThreshold = AS5600_NOISE_THRESH;
+
+    setDriveRealPositionSensorParameters(realPositionConfig.muxChannel,
+                                         REAL_POSITION_WHEEL_DIAMETER_IN * 0.5f,
+                                         realPositionConfig.countsPerRevolution,
+                                         realPositionConfig.wrapThreshold,
+                                         realPositionConfig.noiseThreshold,
+                                         realPositionConfig.muxAddress,
+                                         realPositionConfig.sensorAddress,
+                                         realPositionConfig.rawAngleRegister);
+
+    setDriveRealPositionFirParameters(DRIVE_REAL_POSITION_FIR_COEFFS,
+                                      (uint8_t)(sizeof(DRIVE_REAL_POSITION_FIR_COEFFS) /
+                                                sizeof(DRIVE_REAL_POSITION_FIR_COEFFS[0])));
+    applyDriveRampSettings();
+  }
+
+  bool zeroDriveSensorsToAbsolutePosition(float newZeroPositionIn) {
+    applyDriveMotorCommand(0);
+    driveMode = DRIVE_MODE_IDLE;
+    activeDriveTrajectory = {};
+
+    driveEncoder.write(0);
+    resetRampController();
+
+    const bool sensorResetOk = resetDriveRealPositionSensor(newZeroPositionIn);
+
+    driveSnapshot.driveCounts = 0;
+    driveSnapshot.realCounts = getDriveRealPositionCounts();
+    driveSnapshot.drivePosIn = 0.0f;
+    driveSnapshot.realPosRawIn = getDriveRealPosition();
+    driveSnapshot.realPosFirIn = getDriveRealPositionFir();
+    driveSnapshot.driveVelInPerS = 0.0f;
+    driveSnapshot.realVelInPerS = 0.0f;
+    previousDriveSnapshot = driveSnapshot;
+
+    activeDesiredDrivePositionIn = driveSnapshot.realPosFirIn;
+    driveTargetPositionIn = driveSnapshot.realPosFirIn;
+    driveTargetSettledSinceMs = 0;
+    driveTrajectoryStartMs = millis();
+    driveLastControlMs = millis();
+    armDriveContactSwitchDelay();
+    driveContactSwitchWasPressed = isDriveContactSwitchPressed();
+
+    return sensorResetOk;
+  }
+
+  float getDriveEncoderDistanceIn() {
+    const long counts = driveEncoder.read();
+    const float wheelRevs =
+        ((float)counts) / (DRIVE_GEAR_RATIO * DRIVE_ENCODER_COUNTS_PER_MOTOR_REV);
+    return wheelRevs * (2.0f * PI * DRIVE_WHEEL_RADIUS_IN);
+  }
+
+  void refreshDriveSensors(float dtSeconds) {
+    previousDriveSnapshot = driveSnapshot;
+
+    updateDriveRealPositionFromSensor();
+
+    driveSnapshot.driveCounts = driveEncoder.read();
+    driveSnapshot.realCounts = getDriveRealPositionCounts();
+    driveSnapshot.drivePosIn = getDriveEncoderDistanceIn();
+    driveSnapshot.realPosRawIn = getDriveRealPosition();
+    driveSnapshot.realPosFirIn = getDriveRealPositionFir();
+
+    if (dtSeconds <= 0.0f) {
+      driveSnapshot.driveVelInPerS = 0.0f;
+      driveSnapshot.realVelInPerS = 0.0f;
+      return;
+    }
+
+    driveSnapshot.driveVelInPerS =
+        (driveSnapshot.drivePosIn - previousDriveSnapshot.drivePosIn) / dtSeconds;
+    driveSnapshot.realVelInPerS =
+        (driveSnapshot.realPosFirIn - previousDriveSnapshot.realPosFirIn) / dtSeconds;
+  }
+
+  void applyDriveMotorCommand(int speedCmd) {
+    appliedDriveMotorCmd = constrain(speedCmd, -MAX_DRIVE_MOTOR_CMD, MAX_DRIVE_MOTOR_CMD);
+    md.setM1Speed(appliedDriveMotorCmd);
+  }
+
+  bool startDriveTrajectoryToPositionIn(float targetPositionIn, Side targetSideIn) {
+    activeDriveTrajectory = buildTrajectoryProfile(DRIVE_TRAJECTORY_MAX_ACCEL_IN_PER_S2,
+                                                   steadyCruiseSpeedInPerS,
+                                                   driveSnapshot.realPosFirIn,
+                                                   targetPositionIn);
+    if (!activeDriveTrajectory.isValid) {
+      activeDriveTrajectory = {};
+      return false;
+    }
+
+    driveMode = DRIVE_MODE_TRAJECTORY;
+    driveTargetPositionIn = targetPositionIn;
+    driveTargetSide = targetSideIn;
+    activeDesiredDrivePositionIn = driveSnapshot.realPosFirIn;
+    driveTrajectoryStartMs = millis();
+    driveTargetSettledSinceMs = 0;
+    armDriveContactSwitchDelay();
+
+    resetRampController();
+    applyDriveRampSettings();
+    driveLastControlMs = millis();
+    return true;
+  }
+
+  void updateCenterSpeedMeasurement() {
+    const float centerPositionIn = getRailCenterPositionInches();
+    if (fabsf(driveSnapshot.realPosFirIn - centerPositionIn) <= DRIVE_CENTER_SAMPLE_HALF_WINDOW_IN) {
+      centerSpeedSumInPerS += fabsf(driveSnapshot.realVelInPerS);
+      centerSpeedSampleCount++;
+    }
+  }
+
   void driveStartTowardOppositeSide() {
-    // STUB: decide opposite based on currentSide, then call driveStartTowardSide()
-    Side dest = (currentSide == SIDE_0) ? SIDE_1 : SIDE_0;
+    Side dest = getOppositeSide(currentSide);
     driveStartTowardSide(dest);
   }
 
   void driveStartTowardSide(Side s) {
-    // STUB: set direction pins, enable drive motors, set speed based on run.speedCmd
-    (void)s;
+    driveStartTowardRailPositionFeet(getSidePositionFeet(s), s);
+  }
+
+  void driveStartTowardSideWithEndBuffer(Side s, float extraEndBufferIn) {
+    steadyCruiseSpeedInPerS = max(0.1f, feetToInches(fabsf(run.speedCmd)));
+    armDriveContactSwitchDelay();
+    driveContactSwitchWasPressed = isDriveContactSwitchPressed();
+    const float bufferedTargetIn =
+        applyDriveEndBufferInches(getSidePositionInches(s), extraEndBufferIn);
+    if (!startDriveTrajectoryToPositionIn(bufferedTargetIn, s)) {
+      Serial.println("Unable to build a buffered drive trajectory. Entering emergency stop.");
+      enterEmergencyStop();
+    }
+  }
+
+  void driveStartTowardRailPositionFeet(float targetFeet, Side targetSideAtEndstop) {
+    steadyCruiseSpeedInPerS = max(0.1f, feetToInches(fabsf(run.speedCmd)));
+    armDriveContactSwitchDelay();
+    driveContactSwitchWasPressed = isDriveContactSwitchPressed();
+    if (!startDriveTrajectoryToPositionIn(feetToInches(targetFeet), targetSideAtEndstop)) {
+      Serial.println("Unable to build a valid drive trajectory. Entering emergency stop.");
+      enterEmergencyStop();
+    }
   }
 
   void driveUpdate() {
-    // STUB: non-blocking control loop:
-    //  - apply slowdown speed if slowdown==true
-    //  - use encoder feedback if available
+    if (driveMode == DRIVE_MODE_IDLE) {
+      applyDriveMotorCommand(0);
+      return;
+    }
+
+    if (md.getM1Fault()) {
+      Serial.println("Drive motor fault detected. Entering emergency stop.");
+      enterEmergencyStop();
+      return;
+    }
+
+    const uint32_t nowMs = millis();
+    if ((nowMs - driveLastControlMs) < DRIVE_CONTROL_INTERVAL_MS) {
+      return;
+    }
+
+    const float dtSeconds = (float)(nowMs - driveLastControlMs) / 1000.0f;
+    driveLastControlMs = nowMs;
+
+    refreshDriveSensors(dtSeconds);
+    if (!didDriveRealPositionReadSucceed()) {
+      Serial.println("Real-position sensor read failed. Entering emergency stop.");
+      enterEmergencyStop();
+      return;
+    }
+
+    updateCenterSpeedMeasurement();
+
+    const float elapsedTimeSeconds =
+        (float)(millis() - driveTrajectoryStartMs) / 1000.0f;
+    activeDesiredDrivePositionIn =
+        getTrajectoryPositionAtElapsedTime(activeDriveTrajectory, elapsedTimeSeconds);
+
+    const int motorCmd = rampControl(activeDesiredDrivePositionIn,
+                                     driveSnapshot.realPosFirIn);
+    applyDriveMotorCommand(motorCmd);
+
+    const float positionErrorIn = driveTargetPositionIn - driveSnapshot.realPosFirIn;
+    const bool withinSettleWindow =
+        fabsf(positionErrorIn) <= DRIVE_TARGET_TOLERANCE_IN &&
+        fabsf(driveSnapshot.realVelInPerS) <= DRIVE_STOP_VELOCITY_TOLERANCE_IN_S;
+
+    if (!withinSettleWindow) {
+      driveTargetSettledSinceMs = 0;
+    } else if (driveTargetSettledSinceMs == 0) {
+      driveTargetSettledSinceMs = nowMs;
+    }
   }
 
   void stopDriveMotors() {
-    // STUB: disable drive motors
+    driveMode = DRIVE_MODE_IDLE;
+    activeDriveTrajectory = {};
+    resetRampController();
+    activeDesiredDrivePositionIn = driveSnapshot.realPosFirIn;
+    driveTargetPositionIn = driveSnapshot.realPosFirIn;
+    driveTargetSettledSinceMs = 0;
+    applyDriveMotorCommand(0);
   }
 
   float robotPositionAlongRail() {
-    // STUB: return true position along rail (feet)
-    return 0.0f;
+    return inchesToFeet(driveSnapshot.realPosFirIn);
+  }
+
+  bool hasDriveSettledAtTarget() {
+    return driveMode == DRIVE_MODE_TRAJECTORY &&
+           driveTargetSettledSinceMs != 0 &&
+           (millis() - driveTargetSettledSinceMs) >= DRIVE_TARGET_SETTLE_TIME_MS;
   }
 
   bool reachedSlowdownPosition() {
-    // STUB: return true when near end; usually depends on currentSide and direction
-    return false;
+    if (driveMode != DRIVE_MODE_TRAJECTORY) return false;
+    return fabsf(driveTargetPositionIn - driveSnapshot.realPosFirIn) <= DRIVE_SLOWDOWN_WINDOW_IN;
   }
 
   bool contactSwitchHit() {
-    // STUB: must return true when the appropriate endstop for the current travel is hit.
-    //
-    // You likely need:
-    //  - one contact switch for each end (PIN_LIMIT_SIDE0 / PIN_LIMIT_SIDE1)
-    //  - logic based on current travel direction to decide which switch to watch
-    //
-    // For now always false.
+    if (millis() < driveContactSwitchArmAtMs) {
+      return false;
+    }
+    const bool pressed = isDriveContactSwitchPressed();
+    const bool risingEdge = pressed && !driveContactSwitchWasPressed;
+    driveContactSwitchWasPressed = pressed;
+    if ((driveMode != DRIVE_MODE_IDLE) && risingEdge) {
+      // Rearm the same timer immediately so a follow-up return traversal starts
+      // from the same delay-based structure after an endstop hit.
+      armDriveContactSwitchDelay();
+      return true;
+    }
     return false;
   }
 
+  Side getDriveResetReferenceSide() {
+    if (currentState == SEND_READY_TO_MANAGER ||
+        currentState == WAIT_FOR_GO ||
+        currentState == WAIT_FOR_START_DELAY) {
+      return currentSide;
+    }
+
+    if (currentState == DRIVING ||
+        currentState == RESUME_DRIVING_AFTER_HOIST ||
+        currentState == DRIVE_TO_OPPOSITE) {
+      return driveTargetSide;
+    }
+
+    return currentSide;
+  }
+
   void resetDriveEncoders() {
-    // STUB: set driveWheel and truePosition encoders to 0
+    const Side referenceSide = getDriveResetReferenceSide();
+    const bool sensorResetOk =
+        zeroDriveSensorsToAbsolutePosition(getSidePositionInches(referenceSide));
+    if (!sensorResetOk) {
+      Serial.println("Drive sensor reset did not receive a live sensor acknowledgement.");
+    }
+  }
+
+  bool hasReachedRailPositionFeet(float targetFeet) {
+    const float targetIn = feetToInches(targetFeet);
+    if (!activeDriveTrajectory.isValid || activeDriveTrajectory.direction >= 0.0f) {
+      return driveSnapshot.realPosFirIn >= targetIn;
+    }
+    return driveSnapshot.realPosFirIn <= targetIn;
   }
 
   #pragma endregion
@@ -707,13 +1098,9 @@
 
 /* ========================= Run Helpers ========================= */
   bool destinationIsStartSide() {
-    // STUB: define your experiment logic here.
-    // If true:
-    //  - after first traverse, the robot will "prepareForTraverse" and return,
-    //    then Send_finish occurs when currentSide == startSide.
-    //
-    // Default: false (finish on the opposite side after first traverse).
-    return false;
+    // Interpret the command-side field as "where the robot should finish this
+    // run", which is also the side the next run should start from.
+    return startSide == runPhysicalStartSide;
   }
 
   void resetRunRuntimeFlags() {
@@ -731,6 +1118,9 @@
     tHoistStopMs = 0;
     tFinishedMs = 0;
 
+    centerSpeedSumInPerS = 0.0f;
+    centerSpeedSampleCount = 0;
+
     measuredAvgSpeedCenter = 0.0f;
     measuredWinchHeightBeforeTranslation = 0.0f;
     measuredWinchMaxDepth = 0.0f;
@@ -743,8 +1133,10 @@
     //  - Measured winch maximum depth
     //
     // Keep these fields updated during the run if possible.
-    // For now, populate with command-based placeholders.
-    measuredAvgSpeedCenter = run.speedCmd;                 // placeholder
+    measuredAvgSpeedCenter =
+        (centerSpeedSampleCount > 0)
+            ? inchesToFeet(centerSpeedSumInPerS / (float)centerSpeedSampleCount)
+            : fabsf(run.speedCmd);
     measuredWinchHeightBeforeTranslation = run.winchHeightCmd;
     measuredWinchMaxDepth = run.winchHeightCmd + run.lowerLoadDepthCmd; // placeholder
   }
@@ -839,12 +1231,21 @@
   void setup() {
     Serial.begin(115200);
     xbeeSerial.begin(9600);
+    Wire.begin();
 
     Serial.println("Hello Computer"); //debug print out
 
+    md.init();
+    md.enableDrivers();
+    md.flipM1(FLIP_DRIVE_MOTOR);
+
+    configureDriveControl();
+
     pinMode(PIN_BATT_SENSE, INPUT);
-    if (PIN_LIMIT_SIDE0 != 0) pinMode(PIN_LIMIT_SIDE0, INPUT_PULLUP); // !CHECK!
-    if (PIN_LIMIT_SIDE1 != 0) pinMode(PIN_LIMIT_SIDE1, INPUT_PULLUP); // !CHECK!
+    pinMode(PIN_DRIVE_CONTACT_SWITCH, INPUT_PULLUP);
+
+    zeroDriveSensorsToAbsolutePosition(getSidePositionInches(currentSide));
+    driveContactSwitchWasPressed = isDriveContactSwitchPressed();
 
     resetRunRuntimeFlags();
     stopDriveMotors();
@@ -935,11 +1336,19 @@
               // Service: record start timestamp, start drive motion (nonblocking)
               tDriveStartedMs = millis();
 
-              // Set currentSide to startSide at run start
-              currentSide = startSide;
+              // Track the physical side this run actually began from. The
+              // command packet's "startSide" is interpreted as the desired
+              // finish side for this run / start side for the next run.
+              runPhysicalStartSide = currentSide;
 
-              // Start driving toward opposite side
-              driveStartTowardOppositeSide();
+              // Every run starts by traversing toward the opposite side from
+              // where the robot is currently sitting.
+              if (run.lowerAndHoist) {
+                driveStartTowardRailPositionFeet(run.hoistStopPosCmd,
+                                                 getOppositeSide(runPhysicalStartSide));
+              } else {
+                driveStartTowardSide(getOppositeSide(runPhysicalStartSide));
+              }
 
               currentState = DRIVING;
             }
@@ -952,8 +1361,10 @@
 
             // Event: lower_load_position reached && lowerAndHoist == TRUE
             if (run.lowerAndHoist && !hoistStopReached) {
-              // Define "lower_load_position reached" as reaching hoistStopPosCmd
-              if (robotPositionAlongRail() >= run.hoistStopPosCmd) { // !CHECK! direction-aware compare
+              // For middle-stop runs, the first trajectory itself ends at the
+              // requested hoist-stop position. Transition only after that
+              // trajectory has actually settled at its target.
+              if (hasDriveSettledAtTarget()) {
                 hoistStopReached = true;
 
                 // Service: record hoist_stop timestamp, stop drive, start lowerDelay timer
@@ -988,9 +1399,9 @@
               // Reset encoders based on side logic (stub)
               resetDriveEncoders();
 
-              // Update side:
-              // You must implement direction + which switch hit; for now toggle
-              currentSide = (currentSide == SIDE_0) ? SIDE_1 : SIDE_0; // !CHECK! replace with real side logic
+              // Shared contact switch is used at both rail ends, so the active
+              // trajectory target determines which side we have just reached.
+              currentSide = driveTargetSide;
 
               currentState = POST_TRAVERSAL_DECISION;
               break;
@@ -1030,9 +1441,13 @@
         /* 10) RESUME_DRIVING_AFTER_HOIST */
           case RESUME_DRIVING_AFTER_HOIST:
             // Service: determine destinationIsStartSide(); set drive direction accordingly; resume driving
-            // In this FSM design, destination handling is implemented in POST_TRAVERSAL_DECISION
-            // after reaching an endstop, matching the provided transitions.
-            driveStartTowardOppositeSide();
+            if (destinationIsStartSide()) {
+              driveStartTowardSideWithEndBuffer(runPhysicalStartSide,
+                                                DRIVE_RETURN_END_BUFFER_IN);
+            } else {
+              driveStartTowardSideWithEndBuffer(getOppositeSide(runPhysicalStartSide),
+                                                DRIVE_RETURN_END_BUFFER_IN);
+            }
             currentState = DRIVING;
             break;
 

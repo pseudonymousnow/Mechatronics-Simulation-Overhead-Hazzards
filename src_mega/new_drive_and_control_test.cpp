@@ -66,7 +66,7 @@ enum ControlMode : uint8_t {
 };
 
 enum StreamMode : uint8_t {
-  STREAM_AUTO = 0,
+  STREAM_AUTO = 1,
   STREAM_ON,
   STREAM_OFF
 };

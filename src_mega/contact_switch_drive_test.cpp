@@ -34,7 +34,7 @@ unsigned char M2CS = A1;
 DualG2HighPowerMotorShield md(M1nSLEEP, M1DIR, M1PWM, M1nFAULT, M1CS, M2nSLEEP, M2DIR, M2PWM, M2nFAULT, M2CS);
 
 const bool FLIP_DRIVE_MOTOR = false;
-const uint8_t CONTACT_SWITCH_PIN = 2;  
+const uint8_t CONTACT_SWITCH_PIN = 3;  
 const int MAX_MOTOR_CMD = 400;
 const uint32_t DIRECTION_CHANGE_PAUSE_MS = 300;
 const uint32_t STATUS_PRINT_INTERVAL_MS = 500;
