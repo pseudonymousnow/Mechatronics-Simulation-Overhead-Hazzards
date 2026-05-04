@@ -25,6 +25,7 @@
 /* ========================= Includes ========================= */
   #include <Arduino.h>
   #include <Encoder.h>
+  #include <Servo.h>
   #include <Wire.h>
   #include <math.h>
   #include <string.h>
@@ -32,6 +33,7 @@
   #include <DriveControl.h>
   #include <EncoderMux.h>
   #include <DualG2HighPowerMotorShield.h>
+  #include <WinchControlQuite.h>
 
 /* ========================= Node Identity ========================= */
   #define NODE_ID 1               // <-- CHANGE TO 2 to make this node behave as Node2
@@ -115,6 +117,8 @@
   float winchTarget = 0.0f;           // meaning depends on action (depth/height)
   bool winchComplete = false;
   NodeState winchNextState = WAIT_FOR_COMMAND;
+  bool hasCompletedInitialWinchHome = false;
+  bool winchInitialHomeSeekActive = false;
 
 /* ========================= Drive / Side / Flags ========================= */
   enum Side : uint8_t { SIDE_0 = 0, SIDE_1 = 1 };
@@ -151,6 +155,13 @@
 /* ========================= Pin Placeholders ========================= */
   const uint8_t PIN_BATT_SENSE = A2;            // !CHECK! battery divider input pin, change to MUX
   const uint8_t PIN_DRIVE_CONTACT_SWITCH = 3;   // shared rail-end contact switch for both sides
+  const uint8_t PIN_WINCH_HOME_SWITCH = 2;
+
+/* ========================= Battery / Voltage Sensor ========================= */
+  const uint8_t BATTERY_SENSOR_MUX_CH = 2;
+  const uint8_t INA260_I2C_ADDR = 0x40;
+  const uint8_t INA260_REG_BUS_VOLTAGE = 0x02;
+  const float MINIMUM_SAFE_VOLTAGE = 24.0f;     // !CHECK! minimum safe system voltage threshold
 
 /* ========================= Drive Hardware ========================= */
   unsigned char M1nSLEEP = 5;
@@ -175,6 +186,50 @@
                                 M2nFAULT,
                                 M2CS);
   Encoder driveEncoder(19, 18);
+  Servo pawlServo;
+
+/* ========================= Winch Configuration ========================= */
+  const uint8_t PAWL_SERVO_PIN = 13;
+  const uint8_t PAWL_SERVO_LOCK_POS = 90;
+  const uint8_t PAWL_SERVO_OPEN_POS = 0;
+
+  const uint8_t I2C_MUX_ADDR = 0x70;
+  const uint8_t AS5600_ADDR = 0x36;
+  const uint8_t AS5600_RAW_ANGLE_REG = 0x0C;
+  const uint8_t WINCH_ENCODER_MUX_CH = 1;
+  const bool FLIP_WINCH_ENCODER_SIGN = true;
+  const int WINCH_ENCODER_COUNTS_PER_REV = 4096;
+  const int WINCH_WRAP_THRESHOLD = WINCH_ENCODER_COUNTS_PER_REV / 2;
+  const int WINCH_NOISE_THRESHOLD = 4;
+
+  const float WINCH_DRUM_RADIUS_IN = (1.502f / 2.0f) + (1.0f / 32.0f);
+
+  const bool FLIP_WINCH_MOTOR_DIRECTION = true;
+  const int WINCH_RAISE_SPEED_CMD = 300;
+  const int WINCH_INITIAL_HOME_SEEK_SPEED_CMD = 200;     // !CHECK! first-run upward seek speed before the normal homing sequence
+  const int WINCH_LOWER_SPEED_CMD = -200;
+  const int WINCH_HOMING_SLOW_SPEED_CMD = 140;
+  const int WINCH_MAX_MOTOR_COMMAND = 400;
+  const int WINCH_JOG_UP_MIN_COMMAND = 80;
+  const uint32_t PAWL_LOCK_DELAY_MS = 500;
+  const uint32_t PAWL_UNLOCK_DELAY_MS = 400;
+
+  const float JOG_UP_TARGET_SPEED_IN_S = 0.15f;
+  const float JOG_UP_RELIEF_DISTANCE_IN = 0.0625f;
+  const float JOG_UP_MAX_TRAVEL_IN = 0.50f;
+  const uint32_t JOG_UP_RELIEF_DEBOUNCE_MS = 200;
+  const float JOG_UP_CMD_RATE_PER_SEC = 350.0f;
+  const float JOG_UP_KP_SPEED = 900.0f;
+
+  const float HOMING_BACKOFF_DISTANCE_IN = 1.0f;
+  const float HOMING_MAX_SEARCH_TRAVEL_IN = 60.0f;
+  const float HOMING_SLOWDOWN_THRESHOLD_IN = -2.0f;
+  const float HOMING_MAX_OVERSHOOT_IN = 0.25f;
+
+  const uint32_t WINCH_FILTER_MIN_DT_MS = 10;
+  const float WINCH_FILTER_TAU_S = 0.05f;
+  const float WINCH_DEFAULT_TARGET_IN = 0.0f;
+  const float WINCH_PREPARE_TRAVERSE_HEIGHT_FT = 1.0f; // !CHECK! using home height as the safe traverse preparation target
 
 /* ========================= Drive Configuration ========================= */
   const bool FLIP_DRIVE_MOTOR = false;
@@ -269,12 +324,16 @@
     uint8_t splitCsv(char *line, char *tokens[], uint8_t maxTokens);
     float feetToInches(float feet);
     float inchesToFeet(float inches);
+    float managerDownFeetToWinchPositionInches(float managerDownFeet);
+    float winchPositionInchesToManagerDownFeet(float winchPositionIn);
 
     bool parseRunCommandPacket(const char *payloadIn);
     bool parseLowerWinchPacket(const char *payloadIn, float &depthOut);
 
   /* ---- Battery / Global safety ---- */
     bool battery_too_low();
+    bool readIna260Register16(uint8_t reg, uint16_t &valueOut);
+    bool readBatteryBusVoltage(float &voltageOut);
     void enterEmergencyStop();
 
   /* ---- Winch (stubs you will implement) ---- */
@@ -288,6 +347,8 @@
     float readWinchPosition();          // stub (encoder->feet or similar)
     void resetWinchEncoder();           // stub
     bool winchAtTarget(float target);   // stub
+    void configureWinchControl();
+    void applyWinchMotionConfig(int raiseSpeedCmd);
 
   /* ---- Drive (stubs you will implement) ---- */
     void driveStartTowardOppositeSide();  // non-blocking start
@@ -339,6 +400,15 @@
   bool isWs(char c) { return (c == ' ' || c == '\t' || c == '\r' || c == '\n'); }
   float feetToInches(float feet) { return feet * 12.0f; }
   float inchesToFeet(float inches) { return inches / 12.0f; }
+  float managerDownFeetToWinchPositionInches(float managerDownFeet) {
+    // Convention bridge:
+    // - Manager / node FSM values are positive feet downward from the winch home position.
+    // - WinchControlQuite expects absolute signed positions in inches where downward is negative.
+    return -feetToInches(managerDownFeet);
+  }
+  float winchPositionInchesToManagerDownFeet(float winchPositionIn) {
+    return inchesToFeet(-winchPositionIn);
+  }
 
   void sanitizeInPlace(char *s) {
     // remove '<','>','\r','\n' and trim whitespace
@@ -688,16 +758,51 @@
 
   #pragma region Battery/Emergency_Stop_Functions
   /* ========================= Battery / Emergency Stop ========================= */
+    bool readIna260Register16(uint8_t reg, uint16_t &valueOut) {
+      EncoderMuxConfig batterySensorConfig = makeDefaultAs5600MuxConfig(BATTERY_SENSOR_MUX_CH);
+      batterySensorConfig.sensorAddress = INA260_I2C_ADDR;
+
+      if (!selectMuxChannel(batterySensorConfig)) {
+        return false;
+      }
+
+      Wire.beginTransmission(INA260_I2C_ADDR);
+      Wire.write(reg);
+      if (Wire.endTransmission(false) != 0) {
+        return false;
+      }
+
+      const uint8_t requestedBytes = 2;
+      const uint8_t receivedBytes =
+          Wire.requestFrom((int)INA260_I2C_ADDR, (int)requestedBytes);
+      if (receivedBytes != requestedBytes) {
+        return false;
+      }
+
+      const uint8_t msb = Wire.read();
+      const uint8_t lsb = Wire.read();
+      valueOut = ((uint16_t)msb << 8) | (uint16_t)lsb;
+      return true;
+    }
+
+    bool readBatteryBusVoltage(float &voltageOut) {
+      uint16_t voltageRaw = 0;
+      if (!readIna260Register16(INA260_REG_BUS_VOLTAGE, voltageRaw)) {
+        return false;
+      }
+
+      voltageOut = ((float)voltageRaw * 1.25f) / 1000.0f;
+      return true;
+    }
+
     bool battery_too_low() {
-      // STUB: implement your battery divider + threshold here.
-      // Typical approach:
-      //  - read analog PIN_BATT_SENSE
-      //  - convert to voltage
-      //  - compare to threshold
-      //
-      // For now: always false (safe default for development).
-      (void)PIN_BATT_SENSE;
-      return false;
+      float batteryVoltage = 0.0f;
+      if (!readBatteryBusVoltage(batteryVoltage)) {
+        Serial.println("Battery voltage read failed. Treating as unsafe.");
+        return true;
+      }
+
+      return batteryVoltage < MINIMUM_SAFE_VOLTAGE;
     }
 
     void enterEmergencyStop() {
@@ -710,12 +815,100 @@
   #pragma endregion
 
   #pragma region Winch_Functions
-/* ========================= Winch Stubs ========================= */
+/* ========================= Winch Control ========================= */
+  void configureWinchControl() {
+    setWinchHardwareBindings(&md, &pawlServo);
+    setWinchHardwarePins(PAWL_SERVO_PIN,
+                         PIN_WINCH_HOME_SWITCH,
+                         FLIP_WINCH_MOTOR_DIRECTION);
+
+    setWinchPawlParameters(PAWL_SERVO_LOCK_POS,
+                           PAWL_SERVO_OPEN_POS,
+                           PAWL_LOCK_DELAY_MS,
+                           PAWL_UNLOCK_DELAY_MS);
+
+    setWinchEncoderParameters(WINCH_ENCODER_MUX_CH,
+                              WINCH_DRUM_RADIUS_IN,
+                              FLIP_WINCH_ENCODER_SIGN,
+                              WINCH_ENCODER_COUNTS_PER_REV,
+                              WINCH_WRAP_THRESHOLD,
+                              WINCH_NOISE_THRESHOLD,
+                              I2C_MUX_ADDR,
+                              AS5600_ADDR,
+                              AS5600_RAW_ANGLE_REG);
+
+    applyWinchMotionConfig(WINCH_RAISE_SPEED_CMD);
+
+    setWinchSpeedFilterParameters(WINCH_FILTER_MIN_DT_MS, WINCH_FILTER_TAU_S);
+    setWinchHomingParameters(HOMING_BACKOFF_DISTANCE_IN,
+                             HOMING_MAX_SEARCH_TRAVEL_IN,
+                             HOMING_SLOWDOWN_THRESHOLD_IN,
+                             HOMING_MAX_OVERSHOOT_IN);
+  }
+
+  void applyWinchMotionConfig(int raiseSpeedCmd) {
+    setWinchMotionParameters(raiseSpeedCmd,
+                             WINCH_LOWER_SPEED_CMD,
+                             WINCH_HOMING_SLOW_SPEED_CMD,
+                             WINCH_MAX_MOTOR_COMMAND,
+                             WINCH_JOG_UP_MIN_COMMAND,
+                             WINCH_DEFAULT_TARGET_IN,
+                             JOG_UP_TARGET_SPEED_IN_S,
+                             JOG_UP_RELIEF_DISTANCE_IN,
+                             JOG_UP_MAX_TRAVEL_IN,
+                             JOG_UP_CMD_RATE_PER_SEC,
+                             JOG_UP_KP_SPEED,
+                             JOG_UP_RELIEF_DEBOUNCE_MS);
+  }
+
   void winchStartAction(WinchAction action, float target, NodeState nextState) {
     winchAction = action;
     winchTarget = target;
     winchNextState = nextState;
     winchComplete = false;
+
+    bool actionStarted = false;
+    switch (action) {
+      case WINCH_NONE:
+        winchComplete = true;
+        return;
+
+      case WINCH_REHOME:
+        if (!hasCompletedInitialWinchHome) {
+          // On the very first run after power-up, first seek upward until the
+          // home switch is hit, then run the library homing routine.
+          applyWinchMotionConfig(WINCH_INITIAL_HOME_SEEK_SPEED_CMD);
+          winchInitialHomeSeekActive = true;
+          actionStarted = startWinchAction(WINCH_ACTION_RAISE);
+        } else {
+          applyWinchMotionConfig(WINCH_RAISE_SPEED_CMD);
+          winchInitialHomeSeekActive = false;
+          actionStarted = startWinchAction(WINCH_ACTION_HOMING);
+        }
+        break;
+
+      case WINCH_LOWER_TO_DEPTH:
+      case WINCH_HOIST_TO_HEIGHT:
+        applyWinchMotionConfig(WINCH_RAISE_SPEED_CMD);
+        winchInitialHomeSeekActive = false;
+        actionStarted = winchToPosition(managerDownFeetToWinchPositionInches(target));
+        break;
+
+      case WINCH_PREPARE_FOR_TRAVERSE:
+        applyWinchMotionConfig(WINCH_RAISE_SPEED_CMD);
+        winchInitialHomeSeekActive = false;
+        actionStarted =
+            winchToPosition(managerDownFeetToWinchPositionInches(WINCH_PREPARE_TRAVERSE_HEIGHT_FT));
+        break;
+    }
+
+    if (!actionStarted) {
+      Serial.println("Failed to start winch action. Entering emergency stop.");
+      enterEmergencyStop();
+      return;
+    }
+
+    winchComplete = isWinchActionComplete();
   }
 
   void winchResetVars() {
@@ -725,55 +918,78 @@
   }
 
   void winchUpdate() {
-    // REQUIRED: non-blocking winch state machine that sets winchComplete=true when done.
-    //
-    // Implementations required by requirements:
-    //  - WINCH_REHOME:
-    //      run winch upwards until contact switch hit
-    //      set winch encoder = 0
-    //  - WINCH_LOWER_TO_DEPTH:
-    //      run winch up slightly (barely move encoder)
-    //      unlock pawl via servo
-    //      motor off then run down
-    //      stop at target, motor off, lock pawl
-    //  - WINCH_HOIST_TO_HEIGHT:
-    //      unlock pawl, raise to target, lock pawl
-    //  - WINCH_PREPARE_FOR_TRAVERSE:
-    //      if destinationIsStartSide()==true && lowerAndHoist==false:
-    //         hoist close to top so load can traverse back safely
-    //
-    // PLACEHOLDER behavior:
-    //  - Immediately mark complete so higher-level FSM can be tested.
-    //
-    // !!! Replace this with real non-blocking winch logic. !!!
-    winchComplete = true;
+    updateWinchControl();
+
+    const WinchStatus status = getWinchStatus();
+    if (!status.encoderReadSucceeded) {
+      Serial.println("Winch encoder read failed. Entering emergency stop.");
+      enterEmergencyStop();
+      return;
+    }
+
+    if (hasWinchFault()) {
+      Serial.println("Winch motor fault detected. Entering emergency stop.");
+      enterEmergencyStop();
+      return;
+    }
+
+    const float currentDepthFeet = winchPositionInchesToManagerDownFeet(status.positionIn);
+    if (currentDepthFeet > measuredWinchMaxDepth) {
+      measuredWinchMaxDepth = currentDepthFeet;
+    }
+
+    if (winchAction == WINCH_REHOME &&
+        winchInitialHomeSeekActive &&
+        isWinchActionComplete()) {
+      // First-run special case: after the initial upward seek reaches the
+      // switch, immediately run the normal library homing routine so the
+      // encoder is backed off and zeroed.
+      winchInitialHomeSeekActive = false;
+      applyWinchMotionConfig(WINCH_RAISE_SPEED_CMD);
+      if (!startWinchAction(WINCH_ACTION_HOMING)) {
+        Serial.println("Failed to start the second-stage winch homing action. Entering emergency stop.");
+        enterEmergencyStop();
+        return;
+      }
+      winchComplete = false;
+      return;
+    }
+
+    if (winchAction == WINCH_REHOME &&
+        !winchInitialHomeSeekActive &&
+        isWinchActionComplete()) {
+      hasCompletedInitialWinchHome = true;
+    }
+
+    winchComplete = isWinchActionComplete();
   }
 
   void stopWinchMotor() {
-    // STUB: turn off winch motor driver output
+    finishWinchAction(false);
+    md.setM2Speed(0);
   }
 
   void lockWinchPawl() {
-    // STUB: servo to lock pawl
+    pawlServo.write(PAWL_SERVO_LOCK_POS);
   }
 
   void unlockWinchPawl() {
-    // STUB: servo to unlock pawl
+    pawlServo.write(PAWL_SERVO_OPEN_POS);
   }
 
   float readWinchPosition() {
-    // STUB: return current winch position (feet or encoder->feet)
-    return 0.0f;
+    return winchPositionInchesToManagerDownFeet(getWinchPosition());
   }
 
   void resetWinchEncoder() {
-    // STUB: set winch encoder counts to 0
+    const bool resetOk = resetWinchEncoderToCurrentPosition(0.0f);
+    if (!resetOk) {
+      Serial.println("Winch encoder reset failed.");
+    }
   }
 
   bool winchAtTarget(float target) {
-    // STUB: compare readWinchPosition() to target with tolerance
-    (void)target;
-    return true;
+    return fabsf(readWinchPosition() - target) <= inchesToFeet(0.05f);
   }
 
   #pragma endregion
@@ -1137,8 +1353,8 @@
         (centerSpeedSampleCount > 0)
             ? inchesToFeet(centerSpeedSumInPerS / (float)centerSpeedSampleCount)
             : fabsf(run.speedCmd);
-    measuredWinchHeightBeforeTranslation = run.winchHeightCmd;
-    measuredWinchMaxDepth = run.winchHeightCmd + run.lowerLoadDepthCmd; // placeholder
+    measuredWinchHeightBeforeTranslation = max(measuredWinchHeightBeforeTranslation, 0.0f);
+    measuredWinchMaxDepth = max(measuredWinchMaxDepth, readWinchPosition());
   }
 
   #pragma endregion
@@ -1235,14 +1451,15 @@
 
     Serial.println("Hello Computer"); //debug print out
 
-    md.init();
-    md.enableDrivers();
-    md.flipM1(FLIP_DRIVE_MOTOR);
-
     configureDriveControl();
+    configureWinchControl();
 
     pinMode(PIN_BATT_SENSE, INPUT);
     pinMode(PIN_DRIVE_CONTACT_SWITCH, INPUT_PULLUP);
+
+    pawlServo.write(PAWL_SERVO_LOCK_POS); // Keep the pawl commanded toward locked before the library attaches the servo.
+    const bool winchBeginSucceeded = beginWinchControl(0.0f);
+    md.flipM1(FLIP_DRIVE_MOTOR);
 
     zeroDriveSensorsToAbsolutePosition(getSidePositionInches(currentSide));
     driveContactSwitchWasPressed = isDriveContactSwitchPressed();
@@ -1251,6 +1468,11 @@
     stopDriveMotors();
     stopWinchMotor();
     lockWinchPawl();
+
+    if (!winchBeginSucceeded) {
+      Serial.println("WinchControlQuite begin failed. Entering emergency stop.");
+      currentState = EMERGENCY_STOP;
+    }
   }
   #pragma endregion
 
@@ -1314,7 +1536,8 @@
             // Service: reset encoders, transmit READY <R#>
             resetDriveEncoders();
             // (Optional) capture measured winch height before translation here
-            measuredWinchHeightBeforeTranslation = readWinchPosition(); // stub will be 0 until implemented
+            measuredWinchHeightBeforeTranslation = readWinchPosition();
+            measuredWinchMaxDepth = measuredWinchHeightBeforeTranslation;
             sendReadyToManager();
             currentState = WAIT_FOR_GO;
             break;
@@ -1414,8 +1637,11 @@
             if (lowerDelayTimerRunning && (millis() - lowerDelayStartMs) >= run.lowerDelayMs) {
               lowerDelayTimerRunning = false;
 
-              // Service: set winch variables (lower to lowerLoadDepth), winchNextState=WAIT_HOIST_DELAY
-              winchStartAction(WINCH_LOWER_TO_DEPTH, run.lowerLoadDepthCmd, WAIT_HOIST_DELAY);
+              // Lowering during the middle stop is an additional drop from the
+              // normal travel height, so convert it to an absolute depth target.
+              winchStartAction(WINCH_LOWER_TO_DEPTH,
+                               run.winchHeightCmd + run.lowerLoadDepthCmd,
+                               WAIT_HOIST_DELAY);
               currentState = WAIT_FOR_WINCH_ACTION;
             }
             break;

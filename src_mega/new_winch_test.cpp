@@ -2,7 +2,7 @@
 #include <Servo.h>
 
 #include "DualG2HighPowerMotorShield.h" //M1nSLEEP changed to 5 from 2
-#include "WinchControl.h"
+#include "WinchControlQuite.h"
 
 /*
   new_winch_test.cpp
@@ -39,7 +39,7 @@ Servo pawlServo;
   Pin assignments copied from the original winch_test.cpp.
 */
 const uint8_t PAWL_SERVO_PIN = 13;
-const uint8_t WINCH_HOME_SWITCH_PIN = 3;
+const uint8_t WINCH_HOME_SWITCH_PIN = 2;
 
 /*
   Servo positions copied from the original winch_test.cpp.
