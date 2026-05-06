@@ -153,7 +153,6 @@
   float measuredWinchMaxDepth = 0.0f;
 
 /* ========================= Pin Placeholders ========================= */
-  const uint8_t PIN_BATT_SENSE = A2;            // !CHECK! battery divider input pin, change to MUX
   const uint8_t PIN_DRIVE_CONTACT_SWITCH = 3;   // shared rail-end contact switch for both sides
   const uint8_t PIN_WINCH_HOME_SWITCH = 2;
 
@@ -161,7 +160,7 @@
   const uint8_t BATTERY_SENSOR_MUX_CH = 2;
   const uint8_t INA260_I2C_ADDR = 0x40;
   const uint8_t INA260_REG_BUS_VOLTAGE = 0x02;
-  const float MINIMUM_SAFE_VOLTAGE = 24.0f;     // !CHECK! minimum safe system voltage threshold
+  const float MINIMUM_SAFE_VOLTAGE = 21.0f;     // minimum safe system voltage threshold
 
 /* ========================= Drive Hardware ========================= */
   unsigned char M1nSLEEP = 5;
@@ -234,8 +233,8 @@
 /* ========================= Drive Configuration ========================= */
   const bool FLIP_DRIVE_MOTOR = false;
 
-  const float SIDE_0_POSITION_FT = 0.0f;  // !CHECK! test-rail coordinate for side 0
-  const float SIDE_1_POSITION_FT = 4.0f;  // !CHECK! test-rail coordinate for side 1
+  const float SIDE_0_POSITION_FT = 0.0f;  // test-rail coordinate for side 0 (loading side)
+  const float SIDE_1_POSITION_FT = 27.0f;  // !CHECK! test-rail coordinate for side 1 change these to adjust the distance between collars
 
   const float DRIVE_ENCODER_COUNTS_PER_MOTOR_REV = 1200.0f;
   const float DRIVE_GEAR_RATIO = 0.5f;
@@ -257,7 +256,7 @@
   const float DRIVE_TRAJECTORY_MAX_ACCEL_IN_PER_S2 = 9.0f; //!CHECK!
   const float DRIVE_RAMP_KP = 170.0f; //!CHECK!
   const float DRIVE_RAMP_KI = 15.0f; //!CHECK!
-  const float DRIVE_RAMP_KD = 20.0f;
+  const float DRIVE_RAMP_KD = 20.0f; //!CHECK!
   const float DRIVE_RAMP_INTEGRAL_WINDOW_IN = 4.0f;
   const float DRIVE_REAL_POSITION_FIR_COEFFS[] = {1.0f};
   const float DRIVE_CENTER_SAMPLE_HALF_WINDOW_IN = 6.0f; // !CHECK! center-speed averaging window
@@ -1454,7 +1453,6 @@
     configureDriveControl();
     configureWinchControl();
 
-    pinMode(PIN_BATT_SENSE, INPUT);
     pinMode(PIN_DRIVE_CONTACT_SWITCH, INPUT_PULLUP);
 
     pawlServo.write(PAWL_SERVO_LOCK_POS); // Keep the pawl commanded toward locked before the library attaches the servo.
@@ -1504,7 +1502,7 @@
               stopDriveMotors();
               stopWinchMotor();
               lockWinchPawl();
-              broadcastEmergencyStopToOtherNode();
+              // broadcastEmergencyStopToOtherNode(); //reimplement when adding the other robot !CHECK!
               sendBatteryWarningToManager();
 
               currentState = EMERGENCY_STOP;
